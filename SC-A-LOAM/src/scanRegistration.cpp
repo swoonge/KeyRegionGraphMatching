@@ -41,7 +41,7 @@
 #include "aloam_velodyne/common.h"
 #include "aloam_velodyne/tic_toc.h"
 #include <nav_msgs/Odometry.h>
-#include <opencv/cv.h>
+#include <opencv2/opencv.hpp>
 #include <pcl_conversions/pcl_conversions.h>
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
@@ -83,6 +83,8 @@ std::vector<ros::Publisher> pubEachScan;
 bool PUB_EACH_LINE = false;
 
 double MINIMUM_RANGE = 0.1; 
+
+std::string lidar_topic_name;
 
 template <typename PointT>
 void removeClosedPointCloud(const pcl::PointCloud<PointT> &cloud_in,
@@ -140,6 +142,7 @@ void laserCloudHandler(const sensor_msgs::PointCloud2ConstPtr &laserCloudMsg)
 
 
     int cloudSize = laserCloudIn.points.size();
+    // std::cout << "cloudSize: " << cloudSize << std::endl;
     float startOri = -atan2(laserCloudIn.points[0].y, laserCloudIn.points[0].x);
     float endOri = -atan2(laserCloudIn.points[cloudSize - 1].y,
                           laserCloudIn.points[cloudSize - 1].x) +
@@ -362,7 +365,7 @@ void laserCloudHandler(const sensor_msgs::PointCloud2ConstPtr &laserCloudMsg)
                 int ind = cloudSortInd[k];
 
                 if (cloudNeighborPicked[ind] == 0 &&
-                    cloudCurvature[ind] < 0.1)
+                    cloudCurvature[ind] < 1.0)
                 {
 
                     cloudLabel[ind] = -1; 
@@ -480,6 +483,7 @@ int main(int argc, char **argv)
     nh.param<int>("scan_line", N_SCANS, 16);
     nh.param<std::string>("lidar_type", LIDAR_TYPE, "KITTI");
     nh.param<double>("minimum_range", MINIMUM_RANGE, 0.1);
+    nh.param<std::string>("lidar_topic_name", lidar_topic_name, "/velodyne_points");
 
     //printf("scan line number %d \n", N_SCANS);
 
@@ -489,7 +493,7 @@ int main(int argc, char **argv)
         return 0;
     }
 
-    ros::Subscriber subLaserCloud = nh.subscribe<sensor_msgs::PointCloud2>("/velodyne_points", 100, laserCloudHandler);
+    ros::Subscriber subLaserCloud = nh.subscribe<sensor_msgs::PointCloud2>(lidar_topic_name, 100, laserCloudHandler);
 
     pubLaserCloud = nh.advertise<sensor_msgs::PointCloud2>("/velodyne_cloud_2", 100);
 

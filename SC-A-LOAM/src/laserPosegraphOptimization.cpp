@@ -8,6 +8,9 @@
 #include <string>
 #include <optional>
 
+#include <visualization_msgs/Marker.h>
+#include <visualization_msgs/MarkerArray.h>
+
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
 #include <pcl/search/impl/search.hpp>
@@ -23,9 +26,22 @@
 #include <pcl/octree/octree_pointcloud_voxelcentroid.h>
 #include <pcl/filters/crop_box.h> 
 #include <pcl_conversions/pcl_conversions.h>
+#include <pcl/filters/statistical_outlier_removal.h>
+#include <pcl/filters/passthrough.h>
+#include <pcl/segmentation/sac_segmentation.h>
+#include <pcl/segmentation/extract_clusters.h>
+#include <pcl/features/normal_3d_omp.h>
+#include <pcl/segmentation/region_growing.h>
+
+#include <pcl/keypoints/iss_3d.h>
+#include <pcl/features/normal_3d.h>
+#include <pcl/features/shot.h>
+#include <pcl/features/fpfh.h>
 
 #include <ros/ros.h>
 #include <sensor_msgs/Imu.h>
+#include <std_msgs/Int64.h>
+#include <std_msgs/Float64MultiArray.h>
 #include <sensor_msgs/PointCloud2.h>
 #include <sensor_msgs/NavSatFix.h>
 #include <tf/transform_datatypes.h>
@@ -33,6 +49,15 @@
 #include <nav_msgs/Odometry.h>
 #include <nav_msgs/Path.h>
 #include <geometry_msgs/PoseStamped.h>
+#include <geometry_msgs/Pose.h>
+#include <geometry_msgs/PoseArray.h>
+
+#include <aloam_velodyne/LCPair.h>
+#include <aloam_velodyne/LocalMapAndPose.h>
+#include <aloam_velodyne/PointCloud2List.h>
+#include <aloam_velodyne/Float64MultiArrayArray.h>
+#include <aloam_velodyne/MapAndDescriptors.h>
+
 
 #include <eigen3/Eigen/Dense>
 
@@ -76,9 +101,11 @@ std::queue<nav_msgs::Odometry::ConstPtr> odometryBuf;
 std::queue<sensor_msgs::PointCloud2ConstPtr> fullResBuf;
 std::queue<sensor_msgs::NavSatFix::ConstPtr> gpsBuf;
 std::queue<std::pair<int, int> > scLoopICPBuf;
+std::queue<int> localMapIdxQueue;
 
 std::mutex mBuf;
 std::mutex mKF;
+std::mutex mKeyPoint;
 
 double timeLaserOdometry = 0.0;
 double timeLaser = 0.0;
@@ -86,10 +113,20 @@ double timeLaser = 0.0;
 pcl::PointCloud<PointType>::Ptr laserCloudFullRes(new pcl::PointCloud<PointType>());
 pcl::PointCloud<PointType>::Ptr laserCloudMapAfterPGO(new pcl::PointCloud<PointType>());
 
-std::vector<pcl::PointCloud<PointType>::Ptr> keyframeLaserClouds; 
+std::vector<pcl::PointCloud<PointType>::Ptr> keyframeLaserClouds;
+std::vector<aloam_velodyne::Float64MultiArrayArray> descriptorsVector;
+
 std::vector<Pose6D> keyframePoses;
 std::vector<Pose6D> keyframePosesUpdated;
+std::vector<Pose6D> keyframePosesForLocalMap;
 std::vector<double> keyframeTimes;
+
+std::vector<std::pair<int, int>> ICPPassedPair;
+std::vector<std::pair<int, int>> HandlcPair;
+// std::vector<int, int> ICPPassedPair;
+
+std::vector<int> compareResultVec;
+
 int recentIdxUpdated = 0;
 
 gtsam::NonlinearFactorGraph gtSAMgraph;
@@ -104,8 +141,10 @@ noiseModel::Base::shared_ptr robustLoopNoise;
 noiseModel::Base::shared_ptr robustGPSNoise;
 
 pcl::VoxelGrid<PointType> downSizeFilterScancontext;
-SCManager scManager;
+// SCManager scManager;
 double scDistThres, scMaximumRadius;
+
+pcl::VoxelGrid<PointType> downSizeFilterLocalMap;
 
 pcl::VoxelGrid<PointType> downSizeFilterICP;
 std::mutex mtxICP;
@@ -113,6 +152,13 @@ std::mutex mtxPosegraph;
 std::mutex mtxRecentPose;
 
 pcl::PointCloud<PointType>::Ptr laserCloudMapPGO(new pcl::PointCloud<PointType>());
+pcl::PointCloud<PointType>::Ptr laserCloudLocal(new pcl::PointCloud<PointType>());
+pcl::PointCloud<PointType>::Ptr keypoints(new pcl::PointCloud<PointType>);
+pcl::PointCloud<pcl::PointXYZRGB>::Ptr keypointsRGB(new pcl::PointCloud<pcl::PointXYZRGB>);
+pcl::PointCloud<PointType>::Ptr localMap(new pcl::PointCloud<PointType>());
+pcl::PointCloud<PointType>::Ptr globalkeypointvis(new pcl::PointCloud<PointType>);
+pcl::PointCloud<PointType>::Ptr localkeypointvis(new pcl::PointCloud<PointType>);
+std::vector<pcl::PointCloud<PointType>::Ptr> keypointsVector;
 pcl::VoxelGrid<PointType> downSizeFilterMapPGO;
 bool laserCloudMapPGORedraw = true;
 
@@ -125,16 +171,68 @@ double gpsAltitudeInitOffset = 0.0;
 double recentOptimizedX = 0.0;
 double recentOptimizedY = 0.0;
 
-ros::Publisher pubMapAftPGO, pubOdomAftPGO, pubPathAftPGO;
-ros::Publisher pubLoopScanLocal, pubLoopSubmapLocal;
+float LocalMapBoundary = 20.0; // pubLocalMap
+int keypointsVectorSize = 0;
+
+ros::Publisher pubMapAftPGO, pubOdomAftPGO, pubPathAftPGO, pubKeyPointglobal, pubKeyPointlocal, pubKeyPointglobalGraph, pubKeyPointlocalGraph;
+ros::Publisher pubKeyPoseforLC, pubKeyLocalMapforLC, pubLoopScanLocal, pubLoopSubmapLocal, pubConstraintEdge, pubHandlc, pubLoopIcpResult, pubDisplayLocalMap;//, pubLoopIcpResult;
 ros::Publisher pubOdomRepubVerifier;
+ros::Publisher pubKeyFrameDS, pubDetectTrigger;
 
 std::string save_directory;
-std::string pgKITTIformat, pgScansDirectory, pgSCDsDirectory;
+std::string pgKITTIformat, pgScansDirectory, pgSCDsDirectory, pgLocalScansDirectory;
 std::string odomKITTIformat;
 std::fstream pgG2oSaveStream, pgTimeSaveStream;
 
 std::vector<std::string> edges_str; // used in writeEdge
+
+gtsam::Pose3 Pose6DtoGTSAMPose3(const Pose6D& p);
+void pubLocalMap(void);
+pcl::PointXYZ pointToPCL(const Pose6D& pose);
+std::optional<gtsam::Pose3> doICPVirtualRelative( int _loop_kf_idx, int _curr_kf_idx );
+
+pcl::PointCloud<PointType>::Ptr saveClosedPointCloud(const pcl::PointCloud<PointType> &cloud_in, Pose6D centerPoint, float thres)
+{
+    pcl::PointCloud<PointType>::Ptr cloud_out(new pcl::PointCloud<PointType>());
+    cloud_out->header = cloud_in.header;
+    cloud_out->points.resize(cloud_in.points.size());
+
+    size_t j = 0;
+
+    for (size_t i = 0; i < cloud_in.points.size(); ++i)
+    {
+        if (std::pow(cloud_in.points[i].x - centerPoint.x, 2) + std::pow(cloud_in.points[i].y - centerPoint.y, 2) + std::pow(cloud_in.points[i].z - centerPoint.z, 2) < thres * thres)
+            cloud_out->points[j] = cloud_in.points[i];
+        j++;
+    }
+    if (j != cloud_in.points.size()) { cloud_out->points.resize(j); }
+
+    cloud_out->height = 1;
+    cloud_out->width = static_cast<uint32_t>(j);
+    cloud_out->is_dense = true;
+    return cloud_out;
+}
+
+
+geometry_msgs::Pose gtsamPoseToROSPose(const Pose6D& gtsamPose) {
+    geometry_msgs::Pose rosPose;
+
+    gtsam::Pose3 pose = Pose6DtoGTSAMPose3(gtsamPose);
+
+    // Translation
+    rosPose.position.x = pose.x();
+    rosPose.position.y = pose.y();
+    rosPose.position.z = pose.z();
+
+    // Quaternion rotation
+    rosPose.orientation.x = pose.rotation().toQuaternion().x();
+    rosPose.orientation.y = pose.rotation().toQuaternion().y();
+    rosPose.orientation.z = pose.rotation().toQuaternion().z();
+    rosPose.orientation.w = pose.rotation().toQuaternion().w();
+
+    return rosPose;
+}
+
 
 std::string padZeros(int val, int num_digits = 6) 
 {
@@ -280,6 +378,36 @@ void gpsHandler(const sensor_msgs::NavSatFix::ConstPtr &_gps)
     }
 } // gpsHandler
 
+// <aloam_velodyne/LCPair>
+void LCHandler(const aloam_velodyne::LCPair::ConstPtr &_laserOdometry){
+    mBuf.lock();
+    scLoopICPBuf.push(std::pair<int, int>(_laserOdometry->a_int, _laserOdometry->b_int));
+    // addding actual 6D constraints in the other thread, icp_calculation.
+    mBuf.unlock();
+}  // ScancontextHandler
+
+
+void keyPointHandler(const aloam_velodyne::PointCloud2List::ConstPtr &_keyPoints){
+    mKeyPoint.lock();
+    keypointsVector.clear();
+    descriptorsVector.clear();
+    for (int i = 0; i < _keyPoints->size; i++) {
+        pcl::PointCloud<PointType>::Ptr thisKeyPoints(new pcl::PointCloud<PointType>());
+        pcl::fromROSMsg(_keyPoints->keypoints[i], *thisKeyPoints);
+        keypointsVector.push_back(thisKeyPoints);
+        aloam_velodyne::Float64MultiArrayArray descriptorsCache;
+        for (int a = 0; a < thisKeyPoints->points.size(); a++){
+            descriptorsCache.descriptor.push_back(_keyPoints->descriptors[i].descriptor[a]);
+        }
+        descriptorsVector.push_back(descriptorsCache);
+
+        keypointsVectorSize = keypointsVector.size();
+    }
+    // _keyPoints 5째 노드의 키포인트의 2번째 포인트
+    // cout <<"[[[[sub]"<< keypointsVector[5]->points[1] << "|||" << _keyPoints->descriptors[5].descriptor[1] <<"]]]]"<< endl;
+    mKeyPoint.unlock();
+} 
+
 void initNoises( void )
 {
     gtsam::Vector priorNoiseVector6(6);
@@ -342,7 +470,7 @@ pcl::PointCloud<PointType>::Ptr local2global(const pcl::PointCloud<PointType>::P
     cloudOut->resize(cloudSize);
 
     Eigen::Affine3f transCur = pcl::getTransformation(tf.x, tf.y, tf.z, tf.roll, tf.pitch, tf.yaw);
-    
+
     int numberOfCores = 16;
     #pragma omp parallel for num_threads(numberOfCores)
     for (int i = 0; i < cloudSize; ++i)
@@ -356,6 +484,31 @@ pcl::PointCloud<PointType>::Ptr local2global(const pcl::PointCloud<PointType>::P
 
     return cloudOut;
 }
+
+pcl::PointCloud<PointType>::Ptr global2local(const pcl::PointCloud<PointType>::Ptr &cloudIn, const Pose6D& tf)
+{
+    pcl::PointCloud<PointType>::Ptr cloudOut(new pcl::PointCloud<PointType>());
+
+    int cloudSize = cloudIn->size();
+    cloudOut->resize(cloudSize);
+
+    Eigen::Affine3f transCur = pcl::getTransformation(tf.x, tf.y, tf.z, tf.roll, tf.pitch, tf.yaw);
+    transCur = transCur.inverse();
+
+    int numberOfCores = 16;
+    #pragma omp parallel for num_threads(numberOfCores)
+    for (int i = 0; i < cloudSize; ++i)
+    {
+        const auto &pointFrom = cloudIn->points[i];
+        cloudOut->points[i].x = transCur(0,0) * pointFrom.x + transCur(0,1) * pointFrom.y + transCur(0,2) * pointFrom.z + transCur(0,3);
+        cloudOut->points[i].y = transCur(1,0) * pointFrom.x + transCur(1,1) * pointFrom.y + transCur(1,2) * pointFrom.z + transCur(1,3);
+        cloudOut->points[i].z = transCur(2,0) * pointFrom.x + transCur(2,1) * pointFrom.y + transCur(2,2) * pointFrom.z + transCur(2,3);
+        cloudOut->points[i].intensity = pointFrom.intensity;
+    }
+
+    return cloudOut;
+}
+
 
 void pubPath( void )
 {
@@ -424,7 +577,7 @@ void updatePoses(void)
     recentOptimizedX = lastOptimizedPose.translation().x();
     recentOptimizedY = lastOptimizedPose.translation().y();
 
-    recentIdxUpdated = int(keyframePosesUpdated.size()) - 1;
+    // recentIdxUpdated = int(keyframePosesUpdated.size()) - 1;
 
     mtxRecentPose.unlock();
 } // updatePoses
@@ -494,7 +647,8 @@ void loopFindNearKeyframesCloud( pcl::PointCloud<PointType>::Ptr& nearKeyframes,
 
 
 std::optional<gtsam::Pose3> doICPVirtualRelative( int _loop_kf_idx, int _curr_kf_idx )
-{
+{   
+    
     // parse pointclouds
     int historyKeyframeSearchNum = 25; // enough. ex. [-25, 25] covers submap length of 50x1 = 50m if every kf gap is 1m
     pcl::PointCloud<PointType>::Ptr cureKeyframeCloud(new pcl::PointCloud<PointType>());
@@ -513,6 +667,7 @@ std::optional<gtsam::Pose3> doICPVirtualRelative( int _loop_kf_idx, int _curr_kf
     targetKeyframeCloudMsg.header.frame_id = "/camera_init";
     pubLoopSubmapLocal.publish(targetKeyframeCloudMsg);
 
+
     // ICP Settings
     pcl::IterativeClosestPoint<PointType, PointType> icp;
     icp.setMaxCorrespondenceDistance(150); // giseop , use a value can cover 2*historyKeyframeSearchNum range in meter 
@@ -520,19 +675,19 @@ std::optional<gtsam::Pose3> doICPVirtualRelative( int _loop_kf_idx, int _curr_kf
     icp.setTransformationEpsilon(1e-6);
     icp.setEuclideanFitnessEpsilon(1e-6);
     icp.setRANSACIterations(0);
-
     // Align pointclouds
     icp.setInputSource(cureKeyframeCloud);
     icp.setInputTarget(targetKeyframeCloud);
     pcl::PointCloud<PointType>::Ptr unused_result(new pcl::PointCloud<PointType>());
-    icp.align(*unused_result);
+    icp.align(*unused_result);    
  
     float loopFitnessScoreThreshold = 0.3; // user parameter but fixed low value is safe. 
     if (icp.hasConverged() == false || icp.getFitnessScore() > loopFitnessScoreThreshold) {
-        std::cout << "[SC loop] ICP fitness test failed (" << icp.getFitnessScore() << " > " << loopFitnessScoreThreshold << "). Reject this SC loop." << std::endl;
+        std::cout << "[SC loop] ICP fitness test failed (" << icp.getFitnessScore() << " > " << loopFitnessScoreThreshold << "). Reject this SC loop." << _loop_kf_idx << ", " << _curr_kf_idx << std::endl;
+    
         return std::nullopt;
     } else {
-        std::cout << "[SC loop] ICP fitness test passed (" << icp.getFitnessScore() << " < " << loopFitnessScoreThreshold << "). Add this SC loop." << std::endl;
+        std::cout << "[SC loop] ICP fitness test passed (" << icp.getFitnessScore() << " < " << loopFitnessScoreThreshold << "). Add this SC loop." << _loop_kf_idx << ", " << _curr_kf_idx << std::endl;
     }
 
     // Get pose transformation
@@ -540,17 +695,28 @@ std::optional<gtsam::Pose3> doICPVirtualRelative( int _loop_kf_idx, int _curr_kf
     Eigen::Affine3f correctionLidarFrame;
     correctionLidarFrame = icp.getFinalTransformation();
     pcl::getTranslationAndEulerAngles (correctionLidarFrame, x, y, z, roll, pitch, yaw);
-    gtsam::Pose3 poseFrom = Pose3(Rot3::RzRyRx(roll, pitch, yaw), Point3(x, y, z));
-    gtsam::Pose3 poseTo = Pose3(Rot3::RzRyRx(0.0, 0.0, 0.0), Point3(0.0, 0.0, 0.0));
+    gtsam::Pose3 poseFromR = Pose3(Rot3::RzRyRx(roll, pitch, yaw), Point3(x, y, z));
+    gtsam::Pose3 poseToR = Pose3(Rot3::RzRyRx(0.0, 0.0, 0.0), Point3(0.0, 0.0, 0.0));
+    gtsam::Pose3 relPoseR = poseFromR.between(poseToR);
 
-    return poseFrom.between(poseTo);
+    ICPPassedPair.push_back(std::make_pair(_loop_kf_idx, _curr_kf_idx));
+
+    // // 절대 좌표 더해주기_loop_kf_idx, int _curr_kf_idx 
+    // gtsam::Pose3 poseFromG = Pose6DtoGTSAMPose3(keyframePoses.at(_loop_kf_idx));
+    // gtsam::Pose3 poseToG = Pose6DtoGTSAMPose3(keyframePoses.at(_curr_kf_idx));
+    // gtsam::Pose3 relPoseG = poseFromG.between(poseToG);
+    // // //
+    // gtsam::Pose3 relPoseF = relPoseR * relPoseG;
+    // //cout << relPoseR << relPoseG << relPoseF << endl; 
+    // original -> return poseToR;
+    return relPoseR;
 } // doICPVirtualRelative
 
 void process_pg()
 {
     while(1)
-    {
-		while ( !odometryBuf.empty() && !fullResBuf.empty() )
+    {   
+        while ( !odometryBuf.empty() && !fullResBuf.empty() )
         {
             //
             // pop and check keyframe is or not  
@@ -568,7 +734,6 @@ void process_pg()
             timeLaserOdometry = odometryBuf.front()->header.stamp.toSec();
             timeLaser = fullResBuf.front()->header.stamp.toSec();
             // TODO
-
             laserCloudFullRes->clear();
             pcl::PointCloud<PointType>::Ptr thisKeyFrame(new pcl::PointCloud<PointType>());
             pcl::fromROSMsg(*fullResBuf.front(), *thisKeyFrame);
@@ -577,20 +742,6 @@ void process_pg()
             Pose6D pose_curr = getOdom(odometryBuf.front());
             odometryBuf.pop();
 
-            // find nearest gps 
-            double eps = 0.1; // find a gps topioc arrived within eps second 
-            while (!gpsBuf.empty()) {
-                auto thisGPS = gpsBuf.front();
-                auto thisGPSTime = thisGPS->header.stamp.toSec();
-                if( abs(thisGPSTime - timeLaserOdometry) < eps ) {
-                    currGPS = thisGPS;
-                    hasGPSforThisKF = true; 
-                    break;
-                } else {
-                    hasGPSforThisKF = false;
-                }
-                gpsBuf.pop();
-            }
             mBuf.unlock(); 
 
             //
@@ -615,16 +766,10 @@ void process_pg()
             if( ! isNowKeyFrame ) 
                 continue; 
 
-            if( !gpsOffsetInitialized ) {
-                if(hasGPSforThisKF) { // if the very first frame 
-                    gpsAltitudeInitOffset = currGPS->altitude;
-                    gpsOffsetInitialized = true;
-                } 
-            }
-
             //
             // Save data and Add consecutive node 
             //
+
             pcl::PointCloud<PointType>::Ptr thisKeyFrameDS(new pcl::PointCloud<PointType>());
             downSizeFilterScancontext.setInputCloud(thisKeyFrame);
             downSizeFilterScancontext.filter(*thisKeyFrameDS);
@@ -633,15 +778,24 @@ void process_pg()
             keyframeLaserClouds.push_back(thisKeyFrameDS);
             keyframePoses.push_back(pose_curr);
             keyframePosesUpdated.push_back(pose_curr); // init
+            keyframePosesForLocalMap.push_back(pose_curr);
             keyframeTimes.push_back(timeLaserOdometry);
 
-            scManager.makeAndSaveScancontextAndKeys(*thisKeyFrameDS);
+
+            recentIdxUpdated = int(keyframePosesUpdated.size()) - 1;
 
             laserCloudMapPGORedraw = true;
-            mKF.unlock(); 
+
+            // sensor_msgs::PointCloud2 thisKeyFrameDSMsg;
+            // pcl::toROSMsg(*thisKeyFrameDS, thisKeyFrameDSMsg);
+            // thisKeyFrameDSMsg.header.frame_id = "/camera_init";
+            // pubKeyFrameDS.publish(thisKeyFrameDSMsg);
+
+            mKF.unlock();
 
             const int prev_node_idx = keyframePoses.size() - 2; 
             const int curr_node_idx = keyframePoses.size() - 1; // becuase cpp starts with 0 (actually this index could be any number, but for simple implementation, we follow sequential indexing)
+            
             if( ! gtSAMgraphMade /* prior node */) {
                 const int init_node_idx = 0; 
                 gtsam::Pose3 poseOrigin = Pose6DtoGTSAMPose3(keyframePoses.at(init_node_idx));
@@ -669,34 +823,27 @@ void process_pg()
                     gtsam::Pose3 relPose = poseFrom.between(poseTo);
                     gtSAMgraph.add(gtsam::BetweenFactor<gtsam::Pose3>(prev_node_idx, curr_node_idx, relPose, odomNoise));
 
-                    // gps factor 
-                    if(hasGPSforThisKF) {
-                        double curr_altitude_offseted = currGPS->altitude - gpsAltitudeInitOffset;
-                        mtxRecentPose.lock();
-                        gtsam::Point3 gpsConstraint(recentOptimizedX, recentOptimizedY, curr_altitude_offseted); // in this example, only adjusting altitude (for x and y, very big noises are set) 
-                        mtxRecentPose.unlock();
-                        gtSAMgraph.add(gtsam::GPSFactor(curr_node_idx, gpsConstraint, robustGPSNoise));
-                        cout << "GPS factor added at node " << curr_node_idx << endl;
-                    }
                     initialEstimate.insert(curr_node_idx, poseTo);                
                     writeEdge({prev_node_idx, curr_node_idx}, relPose, edges_str); // giseop
                     // runISAM2opt();
                 }
                 mtxPosegraph.unlock();
 
-                if(curr_node_idx % 100 == 0)
+                if(curr_node_idx % 10 == 0)
                     cout << "posegraph odom node " << curr_node_idx << " added." << endl;
             }
             // if want to print the current graph, use gtSAMgraph.print("\nFactor Graph:\n");
 
             // save utility 
-            std::string curr_node_idx_str = padZeros(curr_node_idx);
-            pcl::io::savePCDFileBinary(pgScansDirectory + curr_node_idx_str + ".pcd", *thisKeyFrame); // scan 
+            // std::string curr_node_idx_str = padZeros(curr_node_idx);
+            // pcl::io::savePCDFileBinary(pgScansDirectory + curr_node_idx_str + ".pcd", *thisKeyFrame); // scan 
+            // // mKF.lock();
+            // const auto& curr_scd = scManager.getConstRefRecentSCD();
+            // // mKF.unlock();
+            // saveSCD(pgSCDsDirectory + curr_node_idx_str + ".scd", curr_scd);
 
-            const auto& curr_scd = scManager.getConstRefRecentSCD();
-            saveSCD(pgSCDsDirectory + curr_node_idx_str + ".scd", curr_scd);
+            // pgTimeSaveStream << timeLaser << std::endl; // path 
 
-            pgTimeSaveStream << timeLaser << std::endl; // path 
         }
 
         // ps. 
@@ -709,24 +856,123 @@ void process_pg()
     }
 } // process_pg
 
-void performSCLoopClosure(void)
+
+pcl::PointXYZ pointToPCL(const Pose6D& pose) {
+    pcl::PointXYZ pcl_point;
+    pcl_point.x = pose.x;
+    pcl_point.y = pose.y;
+    pcl_point.z = pose.z;
+    return pcl_point;
+}
+
+int currentKeyPoseIdxForLocalMap = 0;
+int rangeOfKeyPoseIdxForLocalMap[2] = {0, 0};
+int localMapPointsNum[2] = {1, 0};
+std::vector<std::pair<int, pcl::PointCloud<PointType>::Ptr>> localMapCashe;
+
+pcl::PointCloud<PointType>::Ptr CropPointcoud(pcl::PointCloud<PointType>::Ptr cloudIn, Pose6D localMapCenterPoint, float boundaryRange)
 {
-    if( int(keyframePoses.size()) < scManager.NUM_EXCLUDE_RECENT) // do not try too early 
-        return;
 
-    auto detectResult = scManager.detectLoopClosureID(); // first: nn index, second: yaw diff 
-    int SCclosestHistoryFrameID = detectResult.first;
-    if( SCclosestHistoryFrameID != -1 ) { 
-        const int prev_node_idx = SCclosestHistoryFrameID;
-        const int curr_node_idx = keyframePoses.size() - 1; // because cpp starts 0 and ends n-1
-        cout << "Loop detected! - between " << prev_node_idx << " and " << curr_node_idx << "" << endl;
+    pcl::PassThrough<PointType> pass;
+    pass.setInputCloud (cloudIn);
+    pass.setFilterFieldName ("x");
+    pass.setFilterLimits (localMapCenterPoint.x - boundaryRange, localMapCenterPoint.x + boundaryRange);
+    pass.filter (*cloudIn);
 
-        mBuf.lock();
-        scLoopICPBuf.push(std::pair<int, int>(prev_node_idx, curr_node_idx));
-        // addding actual 6D constraints in the other thread, icp_calculation.
-        mBuf.unlock();
+    pass.setFilterFieldName ("y");
+    pass.setFilterLimits (localMapCenterPoint.y - boundaryRange, localMapCenterPoint.y + boundaryRange);
+    pass.filter (*cloudIn);
+
+    pass.setFilterFieldName ("z");
+    pass.setFilterLimits (localMapCenterPoint.z - 10.0, localMapCenterPoint.z + 10.0);
+    pass.filter (*cloudIn);
+
+    return cloudIn;
+}
+
+void setNewLocalMap(Pose6D currentPose) {
+    localMap->clear();
+    
+    mKF.lock();
+    *localMap += *local2global(keyframeLaserClouds[currentKeyPoseIdxForLocalMap], currentPose);
+    mKF.unlock();
+    localMap = CropPointcoud(localMap, currentPose, LocalMapBoundary);
+    // localMap = saveClosedPointCloud(*localMap, currentPose, LocalMapBoundary);
+
+    localMapPointsNum[0] = 1;
+    localMapPointsNum[1] = localMap->size();
+
+    while(rangeOfKeyPoseIdxForLocalMap[0] > 0) {
+        rangeOfKeyPoseIdxForLocalMap[0] -= 1;
+        mKF.lock();
+        *localMap += *local2global(keyframeLaserClouds[rangeOfKeyPoseIdxForLocalMap[0]], keyframePosesForLocalMap[rangeOfKeyPoseIdxForLocalMap[0]]);
+        // *localMap += *saveClosedPointCloud(*local2global(keyframeLaserClouds[rangeOfKeyPoseIdxForLocalMap[0]], keyframePosesForLocalMap[rangeOfKeyPoseIdxForLocalMap[0]]), currentPose, LocalMapBoundary);
+        mKF.unlock();
+        // localMap = saveClosedPointCloud(*localMap, currentPose, LocalMapBoundary);
+        localMap = CropPointcoud(localMap, currentPose, LocalMapBoundary);
+        localMapPointsNum[0] = localMapPointsNum[1];
+        localMapPointsNum[1] = localMap->size();
+        if((float(localMapPointsNum[1])/float(localMapPointsNum[0]) < 1.1)) {
+            break;
+        }
     }
-} // performSCLoopClosure
+}
+
+void pubLocalMap(void) {
+    Pose6D currentPose = keyframePosesForLocalMap[currentKeyPoseIdxForLocalMap];
+    if (rangeOfKeyPoseIdxForLocalMap[0] == rangeOfKeyPoseIdxForLocalMap[1]){
+        setNewLocalMap(currentPose);
+    }
+    
+    // 이거 하는 동안은 isam이 돌면 안됨.
+    while(rangeOfKeyPoseIdxForLocalMap[1] < recentIdxUpdated) {
+        rangeOfKeyPoseIdxForLocalMap[1] += 1;
+        mKF.lock();
+        *localMap += *local2global(keyframeLaserClouds[rangeOfKeyPoseIdxForLocalMap[1]], keyframePosesForLocalMap[rangeOfKeyPoseIdxForLocalMap[1]]);
+        mKF.unlock();
+        // localMap = saveClosedPointCloud(*localMap, currentPose, LocalMapBoundary);
+        localMap = CropPointcoud(localMap, currentPose, LocalMapBoundary);
+        localMapPointsNum[0] = localMapPointsNum[1];
+        localMapPointsNum[1] = localMap->size();
+        
+        if((float(localMapPointsNum[1])/float(localMapPointsNum[0]) < 1.1)) {
+            cout << "[LocalMap] Pub new localMap" << currentKeyPoseIdxForLocalMap <<": " << rangeOfKeyPoseIdxForLocalMap[0] << "||" << rangeOfKeyPoseIdxForLocalMap[1] << "|||" << float(localMapPointsNum[1])/float(localMapPointsNum[0]) << endl;
+
+            localMap = saveClosedPointCloud(*localMap, currentPose, LocalMapBoundary);
+
+            downSizeFilterLocalMap.setInputCloud(localMap);
+            downSizeFilterLocalMap.filter(*localMap);
+
+            // 이상치 제거 (Statistical Outlier Removal)
+            pcl::StatisticalOutlierRemoval<pcl::PointXYZI> sor;
+            sor.setInputCloud(localMap);
+            sor.setMeanK(50); // 주변 이웃의 수
+            sor.setStddevMulThresh(1.0); // 표준 편차의 배수
+            sor.filter(*localMap);
+
+            aloam_velodyne::LocalMapAndPose LocalMapAndPoseMsg;
+            geometry_msgs::Pose rosPose = gtsamPoseToROSPose(currentPose);
+            
+            sensor_msgs::PointCloud2 localMapMsg;
+            pcl::toROSMsg(*localMap, localMapMsg);
+            localMapMsg.header.frame_id = "/camera_init";
+
+            // 즉, 일정 범위의 맵을 포즈 값과 함께 전송한다.
+            LocalMapAndPoseMsg.pose = rosPose;
+            LocalMapAndPoseMsg.point_cloud = localMapMsg;
+            LocalMapAndPoseMsg.idx = currentKeyPoseIdxForLocalMap;
+            
+            pubKeyLocalMapforLC.publish(LocalMapAndPoseMsg);
+            pubDisplayLocalMap.publish(localMapMsg);
+
+            currentKeyPoseIdxForLocalMap += 1;
+            rangeOfKeyPoseIdxForLocalMap[0] = currentKeyPoseIdxForLocalMap;
+            rangeOfKeyPoseIdxForLocalMap[1] = currentKeyPoseIdxForLocalMap;
+
+            break;
+        }
+    }
+}
 
 void process_lcd(void)
 {
@@ -735,8 +981,11 @@ void process_lcd(void)
     while (ros::ok())
     {
         rate.sleep();
-        performSCLoopClosure();
-        // performRSLoopClosure(); // TODO
+        std_msgs::Int64 keyframePosesSize;
+        keyframePosesSize.data = int(keyframePoses.size());
+
+        // pubDetectTrigger.publish(keyframePosesSize);
+
     }
 } // process_lcd
 
@@ -771,6 +1020,7 @@ void process_icp(void)
         // wait (must required for running the while loop)
         std::chrono::milliseconds dura(2);
         std::this_thread::sleep_for(dura);
+        // visualizeConstraint();
     }
 } // process_icp
 
@@ -780,10 +1030,11 @@ void process_viz_path(void)
     ros::Rate rate(hz);
     while (ros::ok()) {
         rate.sleep();
+        // cout << "path publist process..." << endl;
         if(recentIdxUpdated > 1) {
             pubPath();
         }
-    }
+    }   
 }
 
 void process_isam(void)
@@ -805,15 +1056,16 @@ void process_isam(void)
     }
 }
 
+int clusterCountVector[20];
+
 void pubMap(void)
 {
-    int SKIP_FRAMES = 2; // sparse map visulalization to save computations 
+    int SKIP_FRAMES = 1; // sparse map visulalization to save computations 
     int counter = 0;
 
     laserCloudMapPGO->clear();
 
     mKF.lock(); 
-    // for (int node_idx=0; node_idx < int(keyframePosesUpdated.size()); node_idx++) {
     for (int node_idx=0; node_idx < recentIdxUpdated; node_idx++) {
         if(counter % SKIP_FRAMES == 0) {
             *laserCloudMapPGO += *local2global(keyframeLaserClouds[node_idx], keyframePosesUpdated[node_idx]);
@@ -831,27 +1083,113 @@ void pubMap(void)
     pubMapAftPGO.publish(laserCloudMapPGOMsg);
 }
 
+void pubKeyPoint(void) {
+    globalkeypointvis->clear();
+    localkeypointvis->clear();
+    aloam_velodyne::MapAndDescriptors gloabalMapAndDescriptorsMsg; //여기에 같은 순서로 디스크립터도 채워야 함. 그전에 콜백에서 디스크립터 담기(그냥 메시지 벡터)
+    aloam_velodyne::MapAndDescriptors localMapAndDescriptorsMsg;
+    int gloabalPointSize = 0;
+    int localPointSize = 0;
+    mKeyPoint.lock();
+    if ( keypointsVectorSize > 35 ){
+        // gloabalMapAndDescriptorsMsg.size = keypointsVectorSize-50;
+        for (int node_idx=0; node_idx < keypointsVectorSize-35; node_idx++) {
+            *globalkeypointvis += *local2global(keypointsVector[node_idx], keyframePosesUpdated[node_idx]);//*keypointsVector[node_idx];
+            std_msgs::Float64MultiArray descriptorsCashe;
+            for (int a = 0; a < keypointsVector[node_idx]->size(); a++){
+                gloabalMapAndDescriptorsMsg.descriptors.descriptor.push_back(descriptorsVector[node_idx].descriptor[a]);
+                gloabalPointSize++;
+            }
+        }
+        gloabalMapAndDescriptorsMsg.size = gloabalPointSize;
+        // localMapAndDescriptorsMsg.size = 50;
+        for (int node_idx=keypointsVectorSize-35; node_idx < keypointsVectorSize; node_idx++) {
+            *localkeypointvis += *local2global(keypointsVector[node_idx], keyframePosesUpdated[node_idx]);//*keypointsVector[node_idx];
+            for (int a = 0; a < keypointsVector[node_idx]->size(); a++){
+                localMapAndDescriptorsMsg.descriptors.descriptor.push_back(descriptorsVector[node_idx].descriptor[a]);
+                localPointSize++;
+            }
+        }
+        localMapAndDescriptorsMsg.size = localPointSize;
+
+        mKeyPoint.unlock();
+        sensor_msgs::PointCloud2 KeypointMsg;
+        pcl::toROSMsg(*globalkeypointvis, KeypointMsg);
+        KeypointMsg.header.frame_id = "/camera_init";
+        pubKeyPointglobal.publish(KeypointMsg);
+
+        sensor_msgs::PointCloud2 KeypointLocalMsg;
+        pcl::toROSMsg(*localkeypointvis, KeypointLocalMsg);
+        KeypointLocalMsg.header.frame_id = "/camera_init";
+        pubKeyPointlocal.publish(KeypointLocalMsg);
+
+        gloabalMapAndDescriptorsMsg.keypoints = KeypointMsg;
+        pubKeyPointglobalGraph.publish(gloabalMapAndDescriptorsMsg);
+
+        localMapAndDescriptorsMsg.keypoints = KeypointLocalMsg;
+        pubKeyPointlocalGraph.publish(localMapAndDescriptorsMsg);
+    }
+    else {
+        aloam_velodyne::Float64MultiArrayArray::Ptr globalDescriptors(new aloam_velodyne::Float64MultiArrayArray());
+        for (int node_idx=0; node_idx < keypointsVectorSize; node_idx++) {
+            *globalkeypointvis += *local2global(keypointsVector[node_idx], keyframePosesUpdated[node_idx]);//*keypointsVector[node_idx];
+            for (int a = 0; a < keypointsVector[node_idx]->size(); a++){
+                gloabalMapAndDescriptorsMsg.descriptors.descriptor.push_back(descriptorsVector[node_idx].descriptor[a]);
+                gloabalPointSize++;
+            }
+        }
+        gloabalMapAndDescriptorsMsg.size = gloabalPointSize;
+        mKeyPoint.unlock();
+
+        sensor_msgs::PointCloud2 KeypointMsg;
+        pcl::toROSMsg(*globalkeypointvis, KeypointMsg);
+        KeypointMsg.header.frame_id = "/camera_init";
+        pubKeyPointglobal.publish(KeypointMsg);
+
+        gloabalMapAndDescriptorsMsg.keypoints = KeypointMsg;
+        pubKeyPointglobalGraph.publish(gloabalMapAndDescriptorsMsg);
+    }
+}
+
 void process_viz_map(void)
 {
-    float vizmapFrequency = 0.1; // 0.1 means run onces every 10s
+    int processCount = 0;
+    float vizmapFrequency = 1.0; // 0.1 means run onces every 10s
     ros::Rate rate(vizmapFrequency);
     while (ros::ok()) {
         rate.sleep();
         if(recentIdxUpdated > 1) {
-            pubMap();
+            if(processCount > 10){
+                pubMap();
+                processCount = 0;
+            }
+            processCount++;
+        }
+        if(keypointsVectorSize > 1) {
+            pubKeyPoint();
         }
     }
 } // pointcloud_viz
 
+void process_local_map(void){
+    float localMapFrequency = 10.0; // 0.1 means run onces every 10s
+    ros::Rate rate(localMapFrequency);
+    while (ros::ok()) {
+        rate.sleep();
+        if(recentIdxUpdated > 0){
+            pubLocalMap();
+        }
+    }
+}
 
 int main(int argc, char **argv)
 {
 	ros::init(argc, argv, "laserPGO");
 	ros::NodeHandle nh;
-
     // save directories 
-	nh.param<std::string>("save_directory", save_directory, "/"); // pose assignment every k m move 
-
+	// nh.param<std::string>("save_directory", save_directory, "/"); // pose assignment every k m move 
+    nh.param<std::string>("save_directory", save_directory, "/home/user/Documents/scaloam_scd_saver/data/");
+    // save_directory = "/home/user/Documents/scaloam_scd_saver/data/";
     pgKITTIformat = save_directory + "optimized_poses.txt";
     odomKITTIformat = save_directory + "odom_poses.txt";
 
@@ -868,13 +1206,16 @@ int main(int argc, char **argv)
     unused = system((std::string("exec rm -r ") + pgSCDsDirectory).c_str());
     unused = system((std::string("mkdir -p ") + pgSCDsDirectory).c_str());
 
+    pgLocalScansDirectory = save_directory + "LocalSCDs/"; // SCD: scan context descriptor 
+    unused = system((std::string("exec rm -r ") + pgLocalScansDirectory).c_str());
+    unused = system((std::string("mkdir -p ") + pgLocalScansDirectory).c_str());
+
     // system params 
 	nh.param<double>("keyframe_meter_gap", keyframeMeterGap, 2.0); // pose assignment every k m move 
 	nh.param<double>("keyframe_deg_gap", keyframeDegGap, 10.0); // pose assignment every k deg rot 
     keyframeRadGap = deg2rad(keyframeDegGap);
 
-	nh.param<double>("sc_dist_thres", scDistThres, 0.2);  
-	nh.param<double>("sc_max_radius", scMaximumRadius, 80.0); // 80 is recommended for outdoor, and lower (ex, 20, 40) values are recommended for indoor 
+    nh.param<float>("LocalMapBoundary", LocalMapBoundary, 30.0);
 
     ISAM2Params parameters;
     parameters.relinearizeThreshold = 0.01;
@@ -882,34 +1223,53 @@ int main(int argc, char **argv)
     isam = new ISAM2(parameters);
     initNoises();
 
-    scManager.setSCdistThres(scDistThres);
-    scManager.setMaximumRadius(scMaximumRadius);
-
-    float filter_size = 0.4; 
+    float filter_size = 0.3; 
+    float localMapFilterSize = 0.2; 
     downSizeFilterScancontext.setLeafSize(filter_size, filter_size, filter_size);
     downSizeFilterICP.setLeafSize(filter_size, filter_size, filter_size);
+    downSizeFilterLocalMap.setLeafSize(localMapFilterSize, localMapFilterSize, localMapFilterSize);
 
     double mapVizFilterSize;
-	nh.param<double>("mapviz_filter_size", mapVizFilterSize, 0.4); // pose assignment every k frames 
+	nh.param<double>("mapviz_filter_size", mapVizFilterSize, 0.2); // pose assignment every k frames 
     downSizeFilterMapPGO.setLeafSize(mapVizFilterSize, mapVizFilterSize, mapVizFilterSize);
+    
 
 	ros::Subscriber subLaserCloudFullRes = nh.subscribe<sensor_msgs::PointCloud2>("/velodyne_cloud_registered_local", 100, laserCloudFullResHandler);
 	ros::Subscriber subLaserOdometry = nh.subscribe<nav_msgs::Odometry>("/aft_mapped_to_init", 100, laserOdometryHandler);
 	ros::Subscriber subGPS = nh.subscribe<sensor_msgs::NavSatFix>("/gps/fix", 100, gpsHandler);
+
+    ros::Subscriber subLCdetectResult = nh.subscribe<aloam_velodyne::LCPair>("/LCdetectResult", 100, LCHandler); // std::pair<int, float> 가 리턴
+    ros::Subscriber subKeyPoint = nh.subscribe<aloam_velodyne::PointCloud2List>("/keyPointResult", 100, keyPointHandler);
 
 	pubOdomAftPGO = nh.advertise<nav_msgs::Odometry>("/aft_pgo_odom", 100);
 	pubOdomRepubVerifier = nh.advertise<nav_msgs::Odometry>("/repub_odom", 100);
 	pubPathAftPGO = nh.advertise<nav_msgs::Path>("/aft_pgo_path", 100);
 	pubMapAftPGO = nh.advertise<sensor_msgs::PointCloud2>("/aft_pgo_map", 100);
 
+    pubKeyPointglobal = nh.advertise<sensor_msgs::PointCloud2>("/LGM_keypointGlobal", 100);
+    pubKeyPointlocal = nh.advertise<sensor_msgs::PointCloud2>("/LGM_keypointLocal", 100);
+    pubKeyLocalMapforLC = nh.advertise<aloam_velodyne::LocalMapAndPose>("/LGMLocalMap", 100);
+    pubKeyPoseforLC = nh.advertise<geometry_msgs::PoseArray>("/LGMAllPose", 100);
+    pubDisplayLocalMap = nh.advertise<sensor_msgs::PointCloud2>("/DisplayLGMLocalMap", 100);
+
+    pubKeyPointglobalGraph = nh.advertise<aloam_velodyne::MapAndDescriptors>("/keypointGlobalGraph", 100);
+    pubKeyPointlocalGraph = nh.advertise<aloam_velodyne::MapAndDescriptors>("/keypointLocalGraph", 100);
+
+    pubKeyFrameDS = nh.advertise<sensor_msgs::PointCloud2>("/KeyFrameDSforLC", 100);
+
 	pubLoopScanLocal = nh.advertise<sensor_msgs::PointCloud2>("/loop_scan_local", 100);
 	pubLoopSubmapLocal = nh.advertise<sensor_msgs::PointCloud2>("/loop_submap_local", 100);
+    // pubLoopIcpResult = nh.advertise<sensor_msgs::PointCloud2>("/loop_icpResult", 100);
+
+    // pubConstraintEdge = nh.advertise<visualization_msgs::MarkerArray>("/sc_match_constraints", 10);
+    // pubHandlc = nh.advertise<visualization_msgs::MarkerArray>("/hand_lc_point", 10);
 
 	std::thread posegraph_slam {process_pg}; // pose graph construction
+    // std::thread key_point {process_keypoints};
 	std::thread lc_detection {process_lcd}; // loop closure detection 
 	std::thread icp_calculation {process_icp}; // loop constraint calculation via icp 
 	std::thread isam_update {process_isam}; // if you want to call less isam2 run (for saving redundant computations and no real-time visulization is required), uncommment this and comment all the above runisam2opt when node is added. 
-
+    std::thread local_map {process_local_map}; // visualization - path (high frequency)
 	std::thread viz_map {process_viz_map}; // visualization - map (low frequency because it is heavy)
 	std::thread viz_path {process_viz_path}; // visualization - path (high frequency)
 
