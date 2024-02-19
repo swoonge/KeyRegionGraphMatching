@@ -174,10 +174,16 @@ double recentOptimizedY = 0.0;
 float LocalMapBoundary = 20.0; // pubLocalMap
 int keypointsVectorSize = 0;
 
-ros::Publisher pubMapAftPGO, pubOdomAftPGO, pubPathAftPGO, pubKeyPointglobal, pubKeyPointlocal, pubKeyPointglobalGraph, pubKeyPointlocalGraph;
-ros::Publisher pubKeyPoseforLC, pubKeyLocalMapforLC, pubLoopScanLocal, pubLoopSubmapLocal, pubConstraintEdge, pubHandlc, pubLoopIcpResult, pubDisplayLocalMap;//, pubLoopIcpResult;
+// ros::Publisher pubMapAftPGO, pubOdomAftPGO, pubPathAftPGO, pubKeyPointglobal, pubKeyPointlocal, pubKeyPointglobalGraph, pubKeyPointlocalGraph;
+// ros::Publisher pubKeyPoseforLC, pubKeyLocalMapforLC, pubLoopScanLocal, pubLoopSubmapLocal, pubConstraintEdge, pubHandlc, pubLoopIcpResult, pubDisplayLocalMap;//, pubLoopIcpResult;
+// ros::Publisher pubKeyFrameDS, pubDetectTrigger;
+// def publisher
+ros::Publisher pubMapAftPGO, pubOdomAftPGO, pubPathAftPGO, pubLoopScanLocal, pubLoopSubmapLocal;
 ros::Publisher pubOdomRepubVerifier;
-ros::Publisher pubKeyFrameDS, pubDetectTrigger;
+
+// custem publisher
+ros::Publisher pubKeyFrameForLC, pubDisplayDenseFrame, pubDenseFrameForLC;
+// ros::Publisher
 
 std::string save_directory;
 std::string pgKITTIformat, pgScansDirectory, pgSCDsDirectory, pgLocalScansDirectory;
@@ -781,15 +787,14 @@ void process_pg()
             keyframePosesForLocalMap.push_back(pose_curr);
             keyframeTimes.push_back(timeLaserOdometry);
 
-
             recentIdxUpdated = int(keyframePosesUpdated.size()) - 1;
 
             laserCloudMapPGORedraw = true;
 
-            // sensor_msgs::PointCloud2 thisKeyFrameDSMsg;
-            // pcl::toROSMsg(*thisKeyFrameDS, thisKeyFrameDSMsg);
-            // thisKeyFrameDSMsg.header.frame_id = "/camera_init";
-            // pubKeyFrameDS.publish(thisKeyFrameDSMsg);
+            sensor_msgs::PointCloud2 thisKeyFrameDSMsg;
+            pcl::toROSMsg(*thisKeyFrameDS, thisKeyFrameDSMsg);
+            thisKeyFrameDSMsg.header.frame_id = "/camera_init";
+            pubKeyFrameForLC.publish(thisKeyFrameDSMsg);
 
             mKF.unlock();
 
@@ -855,124 +860,6 @@ void process_pg()
         std::this_thread::sleep_for(dura);
     }
 } // process_pg
-
-
-pcl::PointXYZ pointToPCL(const Pose6D& pose) {
-    pcl::PointXYZ pcl_point;
-    pcl_point.x = pose.x;
-    pcl_point.y = pose.y;
-    pcl_point.z = pose.z;
-    return pcl_point;
-}
-
-int currentKeyPoseIdxForLocalMap = 0;
-int rangeOfKeyPoseIdxForLocalMap[2] = {0, 0};
-int localMapPointsNum[2] = {1, 0};
-std::vector<std::pair<int, pcl::PointCloud<PointType>::Ptr>> localMapCashe;
-
-pcl::PointCloud<PointType>::Ptr CropPointcoud(pcl::PointCloud<PointType>::Ptr cloudIn, Pose6D localMapCenterPoint, float boundaryRange)
-{
-
-    pcl::PassThrough<PointType> pass;
-    pass.setInputCloud (cloudIn);
-    pass.setFilterFieldName ("x");
-    pass.setFilterLimits (localMapCenterPoint.x - boundaryRange, localMapCenterPoint.x + boundaryRange);
-    pass.filter (*cloudIn);
-
-    pass.setFilterFieldName ("y");
-    pass.setFilterLimits (localMapCenterPoint.y - boundaryRange, localMapCenterPoint.y + boundaryRange);
-    pass.filter (*cloudIn);
-
-    pass.setFilterFieldName ("z");
-    pass.setFilterLimits (localMapCenterPoint.z - 10.0, localMapCenterPoint.z + 10.0);
-    pass.filter (*cloudIn);
-
-    return cloudIn;
-}
-
-void setNewLocalMap(Pose6D currentPose) {
-    localMap->clear();
-    
-    mKF.lock();
-    *localMap += *local2global(keyframeLaserClouds[currentKeyPoseIdxForLocalMap], currentPose);
-    mKF.unlock();
-    localMap = CropPointcoud(localMap, currentPose, LocalMapBoundary);
-    // localMap = saveClosedPointCloud(*localMap, currentPose, LocalMapBoundary);
-
-    localMapPointsNum[0] = 1;
-    localMapPointsNum[1] = localMap->size();
-
-    while(rangeOfKeyPoseIdxForLocalMap[0] > 0) {
-        rangeOfKeyPoseIdxForLocalMap[0] -= 1;
-        mKF.lock();
-        *localMap += *local2global(keyframeLaserClouds[rangeOfKeyPoseIdxForLocalMap[0]], keyframePosesForLocalMap[rangeOfKeyPoseIdxForLocalMap[0]]);
-        // *localMap += *saveClosedPointCloud(*local2global(keyframeLaserClouds[rangeOfKeyPoseIdxForLocalMap[0]], keyframePosesForLocalMap[rangeOfKeyPoseIdxForLocalMap[0]]), currentPose, LocalMapBoundary);
-        mKF.unlock();
-        // localMap = saveClosedPointCloud(*localMap, currentPose, LocalMapBoundary);
-        localMap = CropPointcoud(localMap, currentPose, LocalMapBoundary);
-        localMapPointsNum[0] = localMapPointsNum[1];
-        localMapPointsNum[1] = localMap->size();
-        if((float(localMapPointsNum[1])/float(localMapPointsNum[0]) < 1.1)) {
-            break;
-        }
-    }
-}
-
-void pubLocalMap(void) {
-    Pose6D currentPose = keyframePosesForLocalMap[currentKeyPoseIdxForLocalMap];
-    if (rangeOfKeyPoseIdxForLocalMap[0] == rangeOfKeyPoseIdxForLocalMap[1]){
-        setNewLocalMap(currentPose);
-    }
-    
-    // 이거 하는 동안은 isam이 돌면 안됨.
-    while(rangeOfKeyPoseIdxForLocalMap[1] < recentIdxUpdated) {
-        rangeOfKeyPoseIdxForLocalMap[1] += 1;
-        mKF.lock();
-        *localMap += *local2global(keyframeLaserClouds[rangeOfKeyPoseIdxForLocalMap[1]], keyframePosesForLocalMap[rangeOfKeyPoseIdxForLocalMap[1]]);
-        mKF.unlock();
-        // localMap = saveClosedPointCloud(*localMap, currentPose, LocalMapBoundary);
-        localMap = CropPointcoud(localMap, currentPose, LocalMapBoundary);
-        localMapPointsNum[0] = localMapPointsNum[1];
-        localMapPointsNum[1] = localMap->size();
-        
-        if((float(localMapPointsNum[1])/float(localMapPointsNum[0]) < 1.1)) {
-            cout << "[LocalMap] Pub new localMap" << currentKeyPoseIdxForLocalMap <<": " << rangeOfKeyPoseIdxForLocalMap[0] << "||" << rangeOfKeyPoseIdxForLocalMap[1] << "|||" << float(localMapPointsNum[1])/float(localMapPointsNum[0]) << endl;
-
-            localMap = saveClosedPointCloud(*localMap, currentPose, LocalMapBoundary);
-
-            downSizeFilterLocalMap.setInputCloud(localMap);
-            downSizeFilterLocalMap.filter(*localMap);
-
-            // 이상치 제거 (Statistical Outlier Removal)
-            pcl::StatisticalOutlierRemoval<pcl::PointXYZI> sor;
-            sor.setInputCloud(localMap);
-            sor.setMeanK(50); // 주변 이웃의 수
-            sor.setStddevMulThresh(1.0); // 표준 편차의 배수
-            sor.filter(*localMap);
-
-            aloam_velodyne::LocalMapAndPose LocalMapAndPoseMsg;
-            geometry_msgs::Pose rosPose = gtsamPoseToROSPose(currentPose);
-            
-            sensor_msgs::PointCloud2 localMapMsg;
-            pcl::toROSMsg(*localMap, localMapMsg);
-            localMapMsg.header.frame_id = "/camera_init";
-
-            // 즉, 일정 범위의 맵을 포즈 값과 함께 전송한다.
-            LocalMapAndPoseMsg.pose = rosPose;
-            LocalMapAndPoseMsg.point_cloud = localMapMsg;
-            LocalMapAndPoseMsg.idx = currentKeyPoseIdxForLocalMap;
-            
-            pubKeyLocalMapforLC.publish(LocalMapAndPoseMsg);
-            pubDisplayLocalMap.publish(localMapMsg);
-
-            currentKeyPoseIdxForLocalMap += 1;
-            rangeOfKeyPoseIdxForLocalMap[0] = currentKeyPoseIdxForLocalMap;
-            rangeOfKeyPoseIdxForLocalMap[1] = currentKeyPoseIdxForLocalMap;
-
-            break;
-        }
-    }
-}
 
 void process_lcd(void)
 {
@@ -1058,6 +945,74 @@ void process_isam(void)
 
 int clusterCountVector[20];
 
+// void pubKeyPoint(void) {
+//     globalkeypointvis->clear();
+//     localkeypointvis->clear();
+//     aloam_velodyne::MapAndDescriptors gloabalMapAndDescriptorsMsg; //여기에 같은 순서로 디스크립터도 채워야 함. 그전에 콜백에서 디스크립터 담기(그냥 메시지 벡터)
+//     aloam_velodyne::MapAndDescriptors localMapAndDescriptorsMsg;
+//     int gloabalPointSize = 0;
+//     int localPointSize = 0;
+//     mKeyPoint.lock();
+//     if ( keypointsVectorSize > 35 ){
+//         // gloabalMapAndDescriptorsMsg.size = keypointsVectorSize-50;
+//         for (int node_idx=0; node_idx < keypointsVectorSize-35; node_idx++) {
+//             *globalkeypointvis += *local2global(keypointsVector[node_idx], keyframePosesUpdated[node_idx]);//*keypointsVector[node_idx];
+//             std_msgs::Float64MultiArray descriptorsCashe;
+//             for (int a = 0; a < keypointsVector[node_idx]->size(); a++){
+//                 gloabalMapAndDescriptorsMsg.descriptors.descriptor.push_back(descriptorsVector[node_idx].descriptor[a]);
+//                 gloabalPointSize++;
+//             }
+//         }
+//         gloabalMapAndDescriptorsMsg.size = gloabalPointSize;
+//         // localMapAndDescriptorsMsg.size = 50;
+//         for (int node_idx=keypointsVectorSize-35; node_idx < keypointsVectorSize; node_idx++) {
+//             *localkeypointvis += *local2global(keypointsVector[node_idx], keyframePosesUpdated[node_idx]);//*keypointsVector[node_idx];
+//             for (int a = 0; a < keypointsVector[node_idx]->size(); a++){
+//                 localMapAndDescriptorsMsg.descriptors.descriptor.push_back(descriptorsVector[node_idx].descriptor[a]);
+//                 localPointSize++;
+//             }
+//         }
+//         localMapAndDescriptorsMsg.size = localPointSize;
+
+//         mKeyPoint.unlock();
+//         sensor_msgs::PointCloud2 KeypointMsg;
+//         pcl::toROSMsg(*globalkeypointvis, KeypointMsg);
+//         KeypointMsg.header.frame_id = "/camera_init";
+//         pubKeyPointglobal.publish(KeypointMsg);
+
+//         sensor_msgs::PointCloud2 KeypointLocalMsg;
+//         pcl::toROSMsg(*localkeypointvis, KeypointLocalMsg);
+//         KeypointLocalMsg.header.frame_id = "/camera_init";
+//         pubKeyPointlocal.publish(KeypointLocalMsg);
+
+//         gloabalMapAndDescriptorsMsg.keypoints = KeypointMsg;
+//         pubKeyPointglobalGraph.publish(gloabalMapAndDescriptorsMsg);
+
+//         localMapAndDescriptorsMsg.keypoints = KeypointLocalMsg;
+//         pubKeyPointlocalGraph.publish(localMapAndDescriptorsMsg);
+//     }
+//     else {
+//         aloam_velodyne::Float64MultiArrayArray::Ptr globalDescriptors(new aloam_velodyne::Float64MultiArrayArray());
+//         for (int node_idx=0; node_idx < keypointsVectorSize; node_idx++) {
+//             *globalkeypointvis += *local2global(keypointsVector[node_idx], keyframePosesUpdated[node_idx]);//*keypointsVector[node_idx];
+//             for (int a = 0; a < keypointsVector[node_idx]->size(); a++){
+//                 gloabalMapAndDescriptorsMsg.descriptors.descriptor.push_back(descriptorsVector[node_idx].descriptor[a]);
+//                 gloabalPointSize++;
+//             }
+//         }
+//         gloabalMapAndDescriptorsMsg.size = gloabalPointSize;
+//         mKeyPoint.unlock();
+
+//         sensor_msgs::PointCloud2 KeypointMsg;
+//         pcl::toROSMsg(*globalkeypointvis, KeypointMsg);
+//         KeypointMsg.header.frame_id = "/camera_init";
+//         pubKeyPointglobal.publish(KeypointMsg);
+
+//         gloabalMapAndDescriptorsMsg.keypoints = KeypointMsg;
+//         pubKeyPointglobalGraph.publish(gloabalMapAndDescriptorsMsg);
+//     }
+// }
+
 void pubMap(void)
 {
     int SKIP_FRAMES = 1; // sparse map visulalization to save computations 
@@ -1083,74 +1038,7 @@ void pubMap(void)
     pubMapAftPGO.publish(laserCloudMapPGOMsg);
 }
 
-void pubKeyPoint(void) {
-    globalkeypointvis->clear();
-    localkeypointvis->clear();
-    aloam_velodyne::MapAndDescriptors gloabalMapAndDescriptorsMsg; //여기에 같은 순서로 디스크립터도 채워야 함. 그전에 콜백에서 디스크립터 담기(그냥 메시지 벡터)
-    aloam_velodyne::MapAndDescriptors localMapAndDescriptorsMsg;
-    int gloabalPointSize = 0;
-    int localPointSize = 0;
-    mKeyPoint.lock();
-    if ( keypointsVectorSize > 35 ){
-        // gloabalMapAndDescriptorsMsg.size = keypointsVectorSize-50;
-        for (int node_idx=0; node_idx < keypointsVectorSize-35; node_idx++) {
-            *globalkeypointvis += *local2global(keypointsVector[node_idx], keyframePosesUpdated[node_idx]);//*keypointsVector[node_idx];
-            std_msgs::Float64MultiArray descriptorsCashe;
-            for (int a = 0; a < keypointsVector[node_idx]->size(); a++){
-                gloabalMapAndDescriptorsMsg.descriptors.descriptor.push_back(descriptorsVector[node_idx].descriptor[a]);
-                gloabalPointSize++;
-            }
-        }
-        gloabalMapAndDescriptorsMsg.size = gloabalPointSize;
-        // localMapAndDescriptorsMsg.size = 50;
-        for (int node_idx=keypointsVectorSize-35; node_idx < keypointsVectorSize; node_idx++) {
-            *localkeypointvis += *local2global(keypointsVector[node_idx], keyframePosesUpdated[node_idx]);//*keypointsVector[node_idx];
-            for (int a = 0; a < keypointsVector[node_idx]->size(); a++){
-                localMapAndDescriptorsMsg.descriptors.descriptor.push_back(descriptorsVector[node_idx].descriptor[a]);
-                localPointSize++;
-            }
-        }
-        localMapAndDescriptorsMsg.size = localPointSize;
-
-        mKeyPoint.unlock();
-        sensor_msgs::PointCloud2 KeypointMsg;
-        pcl::toROSMsg(*globalkeypointvis, KeypointMsg);
-        KeypointMsg.header.frame_id = "/camera_init";
-        pubKeyPointglobal.publish(KeypointMsg);
-
-        sensor_msgs::PointCloud2 KeypointLocalMsg;
-        pcl::toROSMsg(*localkeypointvis, KeypointLocalMsg);
-        KeypointLocalMsg.header.frame_id = "/camera_init";
-        pubKeyPointlocal.publish(KeypointLocalMsg);
-
-        gloabalMapAndDescriptorsMsg.keypoints = KeypointMsg;
-        pubKeyPointglobalGraph.publish(gloabalMapAndDescriptorsMsg);
-
-        localMapAndDescriptorsMsg.keypoints = KeypointLocalMsg;
-        pubKeyPointlocalGraph.publish(localMapAndDescriptorsMsg);
-    }
-    else {
-        aloam_velodyne::Float64MultiArrayArray::Ptr globalDescriptors(new aloam_velodyne::Float64MultiArrayArray());
-        for (int node_idx=0; node_idx < keypointsVectorSize; node_idx++) {
-            *globalkeypointvis += *local2global(keypointsVector[node_idx], keyframePosesUpdated[node_idx]);//*keypointsVector[node_idx];
-            for (int a = 0; a < keypointsVector[node_idx]->size(); a++){
-                gloabalMapAndDescriptorsMsg.descriptors.descriptor.push_back(descriptorsVector[node_idx].descriptor[a]);
-                gloabalPointSize++;
-            }
-        }
-        gloabalMapAndDescriptorsMsg.size = gloabalPointSize;
-        mKeyPoint.unlock();
-
-        sensor_msgs::PointCloud2 KeypointMsg;
-        pcl::toROSMsg(*globalkeypointvis, KeypointMsg);
-        KeypointMsg.header.frame_id = "/camera_init";
-        pubKeyPointglobal.publish(KeypointMsg);
-
-        gloabalMapAndDescriptorsMsg.keypoints = KeypointMsg;
-        pubKeyPointglobalGraph.publish(gloabalMapAndDescriptorsMsg);
-    }
-}
-
+// pubMapAftPGO를 주기적으로 발행하는 함수.
 void process_viz_map(void)
 {
     int processCount = 0;
@@ -1166,10 +1054,136 @@ void process_viz_map(void)
             processCount++;
         }
         if(keypointsVectorSize > 1) {
-            pubKeyPoint();
+            // pubKeyPoint();
         }
     }
 } // pointcloud_viz
+
+
+int currentKeyPoseIdxForLocalMap = 0;
+int rangeOfKeyPoseIdxForLocalMap[2] = {0, 0};
+int localMapPointsNum[2] = {1, 0};
+std::vector<std::pair<int, pcl::PointCloud<PointType>::Ptr>> localMapCashe;
+
+pcl::PointXYZ pointToPCL(const Pose6D& pose) {
+    pcl::PointXYZ pcl_point;
+    pcl_point.x = pose.x;
+    pcl_point.y = pose.y;
+    pcl_point.z = pose.z;
+    return pcl_point;
+}
+
+/// @brief pcl::PointCloud<PointType>에서 특정 위치점(localMapCenterPoint)을 기준으로 +-boundaryRange 밖의 점 제거(z축은 +-10 고정)
+/// @param cloudIn pcl::PointCloud<PointType>::Ptr
+/// @param localMapCenterPoint crop할 기준점
+/// @param boundaryRange crop할 범위
+pcl::PointCloud<PointType>::Ptr CropPointcoud(pcl::PointCloud<PointType>::Ptr cloudIn, Pose6D localMapCenterPoint, float boundaryRange)
+{
+
+    pcl::PassThrough<PointType> pass;
+    pass.setInputCloud (cloudIn);
+    pass.setFilterFieldName ("x");
+    pass.setFilterLimits (localMapCenterPoint.x - boundaryRange, localMapCenterPoint.x + boundaryRange);
+    pass.filter (*cloudIn);
+
+    pass.setFilterFieldName ("y");
+    pass.setFilterLimits (localMapCenterPoint.y - boundaryRange, localMapCenterPoint.y + boundaryRange);
+    pass.filter (*cloudIn);
+
+    pass.setFilterFieldName ("z");
+    pass.setFilterLimits (localMapCenterPoint.z - 10.0, localMapCenterPoint.z + 10.0);
+    pass.filter (*cloudIn);
+
+    return cloudIn;
+}
+
+/// @brief void pubLocalMap(void)함수의 구성
+/// @param currentPose 
+void setNewLocalMap(Pose6D currentPose) {
+    localMap->clear();
+    
+    mKF.lock();
+    *localMap += *local2global(keyframeLaserClouds[currentKeyPoseIdxForLocalMap], currentPose);
+    mKF.unlock();
+    localMap = CropPointcoud(localMap, currentPose, LocalMapBoundary);
+    // localMap = saveClosedPointCloud(*localMap, currentPose, LocalMapBoundary);
+
+    localMapPointsNum[0] = 1;
+    localMapPointsNum[1] = localMap->size();
+
+    while(rangeOfKeyPoseIdxForLocalMap[0] > 0) {
+        rangeOfKeyPoseIdxForLocalMap[0] -= 1;
+        mKF.lock();
+        *localMap += *local2global(keyframeLaserClouds[rangeOfKeyPoseIdxForLocalMap[0]], keyframePosesForLocalMap[rangeOfKeyPoseIdxForLocalMap[0]]);
+        // *localMap += *saveClosedPointCloud(*local2global(keyframeLaserClouds[rangeOfKeyPoseIdxForLocalMap[0]], keyframePosesForLocalMap[rangeOfKeyPoseIdxForLocalMap[0]]), currentPose, LocalMapBoundary);
+        mKF.unlock();
+        // localMap = saveClosedPointCloud(*localMap, currentPose, LocalMapBoundary);
+        localMap = CropPointcoud(localMap, currentPose, LocalMapBoundary);
+        localMapPointsNum[0] = localMapPointsNum[1];
+        localMapPointsNum[1] = localMap->size();
+        if((float(localMapPointsNum[1])/float(localMapPointsNum[0]) < 1.1)) {
+            break;
+        }
+    }
+}
+
+/// @brief  pubDisplayDenseFrame과 pubDenseFrameForLC을 pub하기 위한 함수
+/// @param  void
+void pubLocalMap(void) {
+    Pose6D currentPose = keyframePosesForLocalMap[currentKeyPoseIdxForLocalMap];
+    if (rangeOfKeyPoseIdxForLocalMap[0] == rangeOfKeyPoseIdxForLocalMap[1]){
+        setNewLocalMap(currentPose);
+    }
+    
+    // 이거 하는 동안은 isam이 돌면 안됨.
+    while(rangeOfKeyPoseIdxForLocalMap[1] < recentIdxUpdated) {
+        rangeOfKeyPoseIdxForLocalMap[1] += 1;
+        mKF.lock();
+        *localMap += *local2global(keyframeLaserClouds[rangeOfKeyPoseIdxForLocalMap[1]], keyframePosesForLocalMap[rangeOfKeyPoseIdxForLocalMap[1]]);
+        mKF.unlock();
+        // localMap = saveClosedPointCloud(*localMap, currentPose, LocalMapBoundary);
+        localMap = CropPointcoud(localMap, currentPose, LocalMapBoundary);
+        localMapPointsNum[0] = localMapPointsNum[1];
+        localMapPointsNum[1] = localMap->size();
+        
+        if((float(localMapPointsNum[1])/float(localMapPointsNum[0]) < 1.1)) {
+            cout << "[LocalMap] Pub new localMap" << currentKeyPoseIdxForLocalMap <<": " << rangeOfKeyPoseIdxForLocalMap[0] << "||" << rangeOfKeyPoseIdxForLocalMap[1] << "|||" << float(localMapPointsNum[1])/float(localMapPointsNum[0]) << endl;
+
+            localMap = saveClosedPointCloud(*localMap, currentPose, LocalMapBoundary);
+
+            downSizeFilterLocalMap.setInputCloud(localMap);
+            downSizeFilterLocalMap.filter(*localMap);
+
+            // 이상치 제거 (Statistical Outlier Removal)
+            pcl::StatisticalOutlierRemoval<pcl::PointXYZI> sor;
+            sor.setInputCloud(localMap);
+            sor.setMeanK(50); // 주변 이웃의 수
+            sor.setStddevMulThresh(1.0); // 표준 편차의 배수
+            sor.filter(*localMap);
+
+            aloam_velodyne::LocalMapAndPose LocalMapAndPoseMsg;
+            geometry_msgs::Pose rosPose = gtsamPoseToROSPose(currentPose);
+            
+            sensor_msgs::PointCloud2 localMapMsg;
+            pcl::toROSMsg(*localMap, localMapMsg);
+            localMapMsg.header.frame_id = "/camera_init";
+
+            // 즉, 일정 범위의 맵을 포즈 값과 함께 전송한다.
+            LocalMapAndPoseMsg.pose = rosPose;
+            LocalMapAndPoseMsg.point_cloud = localMapMsg;
+            LocalMapAndPoseMsg.idx = currentKeyPoseIdxForLocalMap;
+            
+            pubDenseFrameForLC.publish(LocalMapAndPoseMsg);
+            pubDisplayDenseFrame.publish(localMapMsg);
+
+            currentKeyPoseIdxForLocalMap += 1;
+            rangeOfKeyPoseIdxForLocalMap[0] = currentKeyPoseIdxForLocalMap;
+            rangeOfKeyPoseIdxForLocalMap[1] = currentKeyPoseIdxForLocalMap;
+
+            break;
+        }
+    }
+}
 
 void process_local_map(void){
     float localMapFrequency = 10.0; // 0.1 means run onces every 10s
@@ -1233,32 +1247,44 @@ int main(int argc, char **argv)
 	nh.param<double>("mapviz_filter_size", mapVizFilterSize, 0.2); // pose assignment every k frames 
     downSizeFilterMapPGO.setLeafSize(mapVizFilterSize, mapVizFilterSize, mapVizFilterSize);
     
-
+    // defalt subscriber
 	ros::Subscriber subLaserCloudFullRes = nh.subscribe<sensor_msgs::PointCloud2>("/velodyne_cloud_registered_local", 100, laserCloudFullResHandler);
 	ros::Subscriber subLaserOdometry = nh.subscribe<nav_msgs::Odometry>("/aft_mapped_to_init", 100, laserOdometryHandler);
 	ros::Subscriber subGPS = nh.subscribe<sensor_msgs::NavSatFix>("/gps/fix", 100, gpsHandler);
 
+    // custem subscriber for loopcloser
     ros::Subscriber subLCdetectResult = nh.subscribe<aloam_velodyne::LCPair>("/LCdetectResult", 100, LCHandler); // std::pair<int, float> 가 리턴
     ros::Subscriber subKeyPoint = nh.subscribe<aloam_velodyne::PointCloud2List>("/keyPointResult", 100, keyPointHandler);
 
+    // defalt Publisher
 	pubOdomAftPGO = nh.advertise<nav_msgs::Odometry>("/aft_pgo_odom", 100);
 	pubOdomRepubVerifier = nh.advertise<nav_msgs::Odometry>("/repub_odom", 100);
 	pubPathAftPGO = nh.advertise<nav_msgs::Path>("/aft_pgo_path", 100);
 	pubMapAftPGO = nh.advertise<sensor_msgs::PointCloud2>("/aft_pgo_map", 100);
 
-    pubKeyPointglobal = nh.advertise<sensor_msgs::PointCloud2>("/LGM_keypointGlobal", 100);
-    pubKeyPointlocal = nh.advertise<sensor_msgs::PointCloud2>("/LGM_keypointLocal", 100);
-    pubKeyLocalMapforLC = nh.advertise<aloam_velodyne::LocalMapAndPose>("/LGMLocalMap", 100);
-    pubKeyPoseforLC = nh.advertise<geometry_msgs::PoseArray>("/LGMAllPose", 100);
-    pubDisplayLocalMap = nh.advertise<sensor_msgs::PointCloud2>("/DisplayLGMLocalMap", 100);
-
-    pubKeyPointglobalGraph = nh.advertise<aloam_velodyne::MapAndDescriptors>("/keypointGlobalGraph", 100);
-    pubKeyPointlocalGraph = nh.advertise<aloam_velodyne::MapAndDescriptors>("/keypointLocalGraph", 100);
-
-    pubKeyFrameDS = nh.advertise<sensor_msgs::PointCloud2>("/KeyFrameDSforLC", 100);
-
-	pubLoopScanLocal = nh.advertise<sensor_msgs::PointCloud2>("/loop_scan_local", 100);
+    pubLoopScanLocal = nh.advertise<sensor_msgs::PointCloud2>("/loop_scan_local", 100);
 	pubLoopSubmapLocal = nh.advertise<sensor_msgs::PointCloud2>("/loop_submap_local", 100);
+
+    // custem Publisher for KeyRegionGraphMatching
+    pubDenseFrameForLC = nh.advertise<aloam_velodyne::LocalMapAndPose>("/denseFrameForLC", 100);
+    pubDisplayDenseFrame = nh.advertise<sensor_msgs::PointCloud2>("/displayDenseFrame", 100);
+    pubKeyFrameForLC = nh.advertise<sensor_msgs::PointCloud2>("/keyframeForLC", 100);
+    // pubKeyPointglobal = nh.advertise<sensor_msgs::PointCloud2>("/LGM_keypointGlobal", 100);
+    // pubKeyPointlocal = nh.advertise<sensor_msgs::PointCloud2>("/LGM_keypointLocal", 100);
+    
+    // pubKeyPoseforLC = nh.advertise<geometry_msgs::PoseArray>("/LGMAllPose", 100);
+    
+
+    // custem Publisher for ScanContext
+    
+    // pubKeyFrameDS = nh.advertise<sensor_msgs::PointCloud2>("/keyframe_for_LC", 100);
+
+    // pubKeyPointglobalGraph = nh.advertise<aloam_velodyne::MapAndDescriptors>("/keypointGlobalGraph", 100);
+    // pubKeyPointlocalGraph = nh.advertise<aloam_velodyne::MapAndDescriptors>("/keypointLocalGraph", 100);
+
+    // custem Publisher for Visualization
+
+
     // pubLoopIcpResult = nh.advertise<sensor_msgs::PointCloud2>("/loop_icpResult", 100);
 
     // pubConstraintEdge = nh.advertise<visualization_msgs::MarkerArray>("/sc_match_constraints", 10);
@@ -1266,7 +1292,7 @@ int main(int argc, char **argv)
 
 	std::thread posegraph_slam {process_pg}; // pose graph construction
     // std::thread key_point {process_keypoints};
-	std::thread lc_detection {process_lcd}; // loop closure detection 
+	// std::thread lc_detection {process_lcd}; // loop closure detection 
 	std::thread icp_calculation {process_icp}; // loop constraint calculation via icp 
 	std::thread isam_update {process_isam}; // if you want to call less isam2 run (for saving redundant computations and no real-time visulization is required), uncommment this and comment all the above runisam2opt when node is added. 
     std::thread local_map {process_local_map}; // visualization - path (high frequency)

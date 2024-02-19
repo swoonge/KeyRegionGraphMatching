@@ -70,31 +70,13 @@ target_link_libraries(alaserOdometry ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${CERE
 add_executable(alaserMapping src/laserMapping.cpp)
 target_link_libraries(alaserMapping ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${CERES_LIBRARIES})
 
-add_executable(alaserPGO 
-  src/laserPosegraphOptimization.cpp
-  include/scancontext/Scancontext.cpp
-)
-add_executable(alaserScDetector 
-  src/scLoopDetector.cpp
-  include/scancontext/Scancontext.cpp
-)
+add_executable(alaserPGO src/laserPosegraphOptimization.cpp include/scancontext/Scancontext.cpp)
+target_compile_options(alaserPGO PRIVATE ${OpenMP_CXX_FLAGS})
+target_link_libraries(alaserPGO ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${CERES_LIBRARIES} ${OpenMP_CXX_FLAGS} gtsam)
 
-target_compile_options(alaserPGO 
-  PRIVATE ${OpenMP_CXX_FLAGS}
-)
-target_link_libraries(alaserPGO 
-  ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${CERES_LIBRARIES}
-  ${OpenMP_CXX_FLAGS}
-  gtsam
-)
-target_compile_options(alaserScDetector 
-  PRIVATE ${OpenMP_CXX_FLAGS}
-)
-target_link_libraries(alaserScDetector 
-  ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${CERES_LIBRARIES}
-  ${OpenMP_CXX_FLAGS}
-  gtsam
-)
+add_executable(alaserSC src/scLoopDetector.cpp include/scancontext/Scancontext.cpp)
+target_compile_options(alaserSC PRIVATE ${OpenMP_CXX_FLAGS})
+target_link_libraries(alaserSC ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${CERES_LIBRARIES} ${OpenMP_CXX_FLAGS} gtsam)
 
 add_executable(kittiHelper src/kittiHelper.cpp)
 target_link_libraries(kittiHelper ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${OpenCV_LIBS})

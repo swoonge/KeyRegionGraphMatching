@@ -12,29 +12,6 @@
     <param name="mapping_plane_resolution" type="double" value="0.2"/> <!-- A-LOAM -->
 
     <param name="LocalMapBoundary" type="double" value="25.0"/>
-    <param name="ISS_SalientRadius" type="double" value="15"/>
-    <param name="ISS_NonMaxRadius" type="double" value="15"/>
-    <param name="ISS_Gamma21" type="double" value="0.5"/>
-    <param name="ISS_Gamma23" type="double" value="0.5"/>
-    <param name="ISS_MinNeighbors" type="int" value="20"/>
-    <param name="Detector" type="string" value="Harris"/> <!--SIFT, ISS, Harris-->
-
-    <param name="HarrisRadius" type="double" value="1.0"/>
-    <param name="HarrisRadiusSearch" type="double" value="30"/>
-    <param name="HarrisThreshold" type="double" value="1e-8"/>
-    <!-- <param name="HarrisThreshold" type="double" value="1e-9"/>
-    <param name="HarrisThreshold" type="double" value="1e-9"/> -->
-
-    <param name="rops_RadiusSearch" type="double" value="3.0"/>
-    <param name="rops_NumberOfPartitionBins" type="int" value="5"/>
-    <param name="rops_NumberOfRotations" type="int" value="3"/>
-    <param name="rops_SupportRadius" type="double" value="3.0"/>
-
-    <param name="triangulation_setSearchRadius" type="double" value="1.0"/>
-    <param name="triangulation_setMu" type="double" value="10.0"/>
-    <param name="triangulation_setMaximumNearestNeighbors" type="int" value="70"/>
-
-    <param name="localGraphMu" type="double" value="1.5"/>
 
     <!-- SC-A-LOAM -->
     <param name="keyframe_meter_gap" type="double" value="3.0"/> 
@@ -43,6 +20,8 @@
     <param name="sc_dist_thres" type="double" value="0.2"/> <!-- SC-A-LOAM, if want no outliers, use 0.1-0.15 -->
     <!-- <param name="sc_max_radius" type="double" value="20.0"/> 20 or 40 for indoor -->
     <param name="sc_max_radius" type="double" value="40.0"/> <!-- for outdoor -->
+    <param name="sc_source" type="string" value="keyframe"/> <!-- keyframe or denseFrame -->
+    
 
     <!-- utils -->
     <param name="save_directory" type="string" value="/home/user/Documents/scaloam_scd_saver/data/00/"/>  <!-- CHANGE THIS and end with / -->
@@ -55,7 +34,7 @@
     <node pkg="aloam_velodyne" type="alaserOdometry" name="alaserOdometry" output="screen" />
     <node pkg="aloam_velodyne" type="alaserMapping" name="alaserMapping" output="screen" />
     <node pkg="aloam_velodyne" type="alaserPGO" name="alaserPGO" output="screen" />
-    <!-- <node pkg="aloam_velodyne" type="alaserDescriptor" name="alaseralaserDescriptor" output="screen" /> -->
+    <node pkg="aloam_velodyne" type="alaserSC" name="alaseraSC" output="screen" />
     <!-- <node pkg="aloam_velodyne" type="alaserScDetector" name="alaserScDetector" output="screen" /> -->
 
     <arg name="rviz" default="true" />
