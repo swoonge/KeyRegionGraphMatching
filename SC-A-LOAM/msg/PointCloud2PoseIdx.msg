@@ -1,0 +1,4 @@
+sensor_msgs/PointCloud2 point_cloud1
+sensor_msgs/PointCloud2 point_cloud2
+geometry_msgs/Pose pose
+int64 idx

@@ -12,12 +12,6 @@
     <param name="mapping_plane_resolution" type="double" value="0.2"/> <!-- A-LOAM -->
 
     <param name="LocalMapBoundary" type="double" value="25.0"/>
-    <param name="ISS_SalientRadius" type="double" value="15"/>
-    <param name="ISS_NonMaxRadius" type="double" value="15"/>
-    <param name="ISS_Gamma21" type="double" value="0.5"/>
-    <param name="ISS_Gamma23" type="double" value="0.5"/>
-    <param name="ISS_MinNeighbors" type="int" value="20"/>
-    <param name="Detector" type="string" value="Harris"/> <!--SIFT, ISS, Harris-->
 
     <param name="HarrisRadius" type="double" value="1.0"/>
     <param name="HarrisRadiusSearch" type="double" value="30"/>

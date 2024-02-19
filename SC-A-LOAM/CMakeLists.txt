@@ -29,6 +29,7 @@ add_message_files(
   MapAndDescriptors.msg
   KPAndSurroundPC.msg
   KPAndDescriptor.msg
+  PointCloud2PoseIdx.msg
 )
 
 generate_messages(

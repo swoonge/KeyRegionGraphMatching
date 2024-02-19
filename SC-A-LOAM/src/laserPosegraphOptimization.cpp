@@ -32,11 +32,8 @@
 #include <pcl/segmentation/extract_clusters.h>
 #include <pcl/features/normal_3d_omp.h>
 #include <pcl/segmentation/region_growing.h>
-
-#include <pcl/keypoints/iss_3d.h>
+#include <pcl/keypoints/harris_3d.h>
 #include <pcl/features/normal_3d.h>
-#include <pcl/features/shot.h>
-#include <pcl/features/fpfh.h>
 
 #include <ros/ros.h>
 #include <sensor_msgs/Imu.h>
@@ -57,7 +54,7 @@
 #include <aloam_velodyne/PointCloud2List.h>
 #include <aloam_velodyne/Float64MultiArrayArray.h>
 #include <aloam_velodyne/MapAndDescriptors.h>
-
+#include <aloam_velodyne/PointCloud2PoseIdx.h>
 
 #include <eigen3/Eigen/Dense>
 
@@ -171,6 +168,7 @@ double gpsAltitudeInitOffset = 0.0;
 double recentOptimizedX = 0.0;
 double recentOptimizedY = 0.0;
 
+float HarrisThreshold = 0.000001;
 float LocalMapBoundary = 20.0; // pubLocalMap
 int keypointsVectorSize = 0;
 
@@ -945,74 +943,6 @@ void process_isam(void)
 
 int clusterCountVector[20];
 
-// void pubKeyPoint(void) {
-//     globalkeypointvis->clear();
-//     localkeypointvis->clear();
-//     aloam_velodyne::MapAndDescriptors gloabalMapAndDescriptorsMsg; //여기에 같은 순서로 디스크립터도 채워야 함. 그전에 콜백에서 디스크립터 담기(그냥 메시지 벡터)
-//     aloam_velodyne::MapAndDescriptors localMapAndDescriptorsMsg;
-//     int gloabalPointSize = 0;
-//     int localPointSize = 0;
-//     mKeyPoint.lock();
-//     if ( keypointsVectorSize > 35 ){
-//         // gloabalMapAndDescriptorsMsg.size = keypointsVectorSize-50;
-//         for (int node_idx=0; node_idx < keypointsVectorSize-35; node_idx++) {
-//             *globalkeypointvis += *local2global(keypointsVector[node_idx], keyframePosesUpdated[node_idx]);//*keypointsVector[node_idx];
-//             std_msgs::Float64MultiArray descriptorsCashe;
-//             for (int a = 0; a < keypointsVector[node_idx]->size(); a++){
-//                 gloabalMapAndDescriptorsMsg.descriptors.descriptor.push_back(descriptorsVector[node_idx].descriptor[a]);
-//                 gloabalPointSize++;
-//             }
-//         }
-//         gloabalMapAndDescriptorsMsg.size = gloabalPointSize;
-//         // localMapAndDescriptorsMsg.size = 50;
-//         for (int node_idx=keypointsVectorSize-35; node_idx < keypointsVectorSize; node_idx++) {
-//             *localkeypointvis += *local2global(keypointsVector[node_idx], keyframePosesUpdated[node_idx]);//*keypointsVector[node_idx];
-//             for (int a = 0; a < keypointsVector[node_idx]->size(); a++){
-//                 localMapAndDescriptorsMsg.descriptors.descriptor.push_back(descriptorsVector[node_idx].descriptor[a]);
-//                 localPointSize++;
-//             }
-//         }
-//         localMapAndDescriptorsMsg.size = localPointSize;
-
-//         mKeyPoint.unlock();
-//         sensor_msgs::PointCloud2 KeypointMsg;
-//         pcl::toROSMsg(*globalkeypointvis, KeypointMsg);
-//         KeypointMsg.header.frame_id = "/camera_init";
-//         pubKeyPointglobal.publish(KeypointMsg);
-
-//         sensor_msgs::PointCloud2 KeypointLocalMsg;
-//         pcl::toROSMsg(*localkeypointvis, KeypointLocalMsg);
-//         KeypointLocalMsg.header.frame_id = "/camera_init";
-//         pubKeyPointlocal.publish(KeypointLocalMsg);
-
-//         gloabalMapAndDescriptorsMsg.keypoints = KeypointMsg;
-//         pubKeyPointglobalGraph.publish(gloabalMapAndDescriptorsMsg);
-
-//         localMapAndDescriptorsMsg.keypoints = KeypointLocalMsg;
-//         pubKeyPointlocalGraph.publish(localMapAndDescriptorsMsg);
-//     }
-//     else {
-//         aloam_velodyne::Float64MultiArrayArray::Ptr globalDescriptors(new aloam_velodyne::Float64MultiArrayArray());
-//         for (int node_idx=0; node_idx < keypointsVectorSize; node_idx++) {
-//             *globalkeypointvis += *local2global(keypointsVector[node_idx], keyframePosesUpdated[node_idx]);//*keypointsVector[node_idx];
-//             for (int a = 0; a < keypointsVector[node_idx]->size(); a++){
-//                 gloabalMapAndDescriptorsMsg.descriptors.descriptor.push_back(descriptorsVector[node_idx].descriptor[a]);
-//                 gloabalPointSize++;
-//             }
-//         }
-//         gloabalMapAndDescriptorsMsg.size = gloabalPointSize;
-//         mKeyPoint.unlock();
-
-//         sensor_msgs::PointCloud2 KeypointMsg;
-//         pcl::toROSMsg(*globalkeypointvis, KeypointMsg);
-//         KeypointMsg.header.frame_id = "/camera_init";
-//         pubKeyPointglobal.publish(KeypointMsg);
-
-//         gloabalMapAndDescriptorsMsg.keypoints = KeypointMsg;
-//         pubKeyPointglobalGraph.publish(gloabalMapAndDescriptorsMsg);
-//     }
-// }
-
 void pubMap(void)
 {
     int SKIP_FRAMES = 1; // sparse map visulalization to save computations 
@@ -1058,7 +988,6 @@ void process_viz_map(void)
         }
     }
 } // pointcloud_viz
-
 
 int currentKeyPoseIdxForLocalMap = 0;
 int rangeOfKeyPoseIdxForLocalMap[2] = {0, 0};
@@ -1155,22 +1084,49 @@ void pubLocalMap(void) {
             downSizeFilterLocalMap.filter(*localMap);
 
             // 이상치 제거 (Statistical Outlier Removal)
-            pcl::StatisticalOutlierRemoval<pcl::PointXYZI> sor;
+            pcl::StatisticalOutlierRemoval<PointType> sor;
             sor.setInputCloud(localMap);
             sor.setMeanK(50); // 주변 이웃의 수
             sor.setStddevMulThresh(1.0); // 표준 편차의 배수
             sor.filter(*localMap);
 
-            aloam_velodyne::LocalMapAndPose LocalMapAndPoseMsg;
+            // NormalEstimation
+            pcl::PointCloud<pcl::Normal>::Ptr normals(new pcl::PointCloud<pcl::Normal>);
+            pcl::NormalEstimation<PointType, pcl::Normal> ne;
+            pcl::search::KdTree<PointType>::Ptr treeNe(new pcl::search::KdTree<PointType> ());
+            ne.setSearchMethod(treeNe);
+            ne.setKSearch(0);
+            ne.setViewPoint(currentPose.x, currentPose.y, currentPose.z);
+            ne.setRadiusSearch(1.5f); // 1
+            ne.setInputCloud(localMap);
+            ne.compute(*normals);
+
+            // HarrisKeypoint3D 추출
+            pcl::PointCloud<PointType>::Ptr currentkeypoints(new pcl::PointCloud<PointType>);
+            pcl::HarrisKeypoint3D <PointType, PointType> detector;
+            detector.setNonMaxSupression (true);
+            detector.setInputCloud (localMap);
+            detector.setRadiusSearch(100);
+            detector.setRadius (2.0f);
+            detector.setThreshold (HarrisThreshold);
+            detector.setNormals(normals);
+            detector.compute (*currentkeypoints);
+
+            aloam_velodyne::PointCloud2PoseIdx LocalMapAndPoseMsg;
             geometry_msgs::Pose rosPose = gtsamPoseToROSPose(currentPose);
             
             sensor_msgs::PointCloud2 localMapMsg;
             pcl::toROSMsg(*localMap, localMapMsg);
             localMapMsg.header.frame_id = "/camera_init";
 
+            sensor_msgs::PointCloud2 currentkeypointsMsg;
+            pcl::toROSMsg(*currentkeypoints, currentkeypointsMsg);
+            currentkeypointsMsg.header.frame_id = "/camera_init";
+
             // 즉, 일정 범위의 맵을 포즈 값과 함께 전송한다.
             LocalMapAndPoseMsg.pose = rosPose;
-            LocalMapAndPoseMsg.point_cloud = localMapMsg;
+            LocalMapAndPoseMsg.point_cloud1 = localMapMsg;
+            LocalMapAndPoseMsg.point_cloud2 = currentkeypointsMsg;
             LocalMapAndPoseMsg.idx = currentKeyPoseIdxForLocalMap;
             
             pubDenseFrameForLC.publish(LocalMapAndPoseMsg);
@@ -1203,6 +1159,7 @@ int main(int argc, char **argv)
     // save directories 
 	// nh.param<std::string>("save_directory", save_directory, "/"); // pose assignment every k m move 
     nh.param<std::string>("save_directory", save_directory, "/home/user/Documents/scaloam_scd_saver/data/");
+    nh.param<float>("HarrisThreshold", HarrisThreshold, 1e-10);
     // save_directory = "/home/user/Documents/scaloam_scd_saver/data/";
     pgKITTIformat = save_directory + "optimized_poses.txt";
     odomKITTIformat = save_directory + "odom_poses.txt";
@@ -1266,9 +1223,10 @@ int main(int argc, char **argv)
 	pubLoopSubmapLocal = nh.advertise<sensor_msgs::PointCloud2>("/loop_submap_local", 100);
 
     // custem Publisher for KeyRegionGraphMatching
-    pubDenseFrameForLC = nh.advertise<aloam_velodyne::LocalMapAndPose>("/denseFrameForLC", 100);
+    pubDenseFrameForLC = nh.advertise<aloam_velodyne::PointCloud2PoseIdx>("/denseFrameForLC", 100);
     pubDisplayDenseFrame = nh.advertise<sensor_msgs::PointCloud2>("/displayDenseFrame", 100);
     pubKeyFrameForLC = nh.advertise<sensor_msgs::PointCloud2>("/keyframeForLC", 100);
+    
     // pubKeyPointglobal = nh.advertise<sensor_msgs::PointCloud2>("/LGM_keypointGlobal", 100);
     // pubKeyPointlocal = nh.advertise<sensor_msgs::PointCloud2>("/LGM_keypointLocal", 100);
     
@@ -1291,8 +1249,6 @@ int main(int argc, char **argv)
     // pubHandlc = nh.advertise<visualization_msgs::MarkerArray>("/hand_lc_point", 10);
 
 	std::thread posegraph_slam {process_pg}; // pose graph construction
-    // std::thread key_point {process_keypoints};
-	// std::thread lc_detection {process_lcd}; // loop closure detection 
 	std::thread icp_calculation {process_icp}; // loop constraint calculation via icp 
 	std::thread isam_update {process_isam}; // if you want to call less isam2 run (for saving redundant computations and no real-time visulization is required), uncommment this and comment all the above runisam2opt when node is added. 
     std::thread local_map {process_local_map}; // visualization - path (high frequency)

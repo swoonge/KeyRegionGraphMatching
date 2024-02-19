@@ -40,19 +40,9 @@
 #include <pcl/segmentation/extract_clusters.h>
 #include <pcl/features/normal_3d_omp.h>
 
-#include <pcl/features/shot.h>
-#include <pcl/features/fpfh.h>
-#include <pcl/keypoints/iss_3d.h>
-#include <pcl/features/normal_3d.h>
-
 #include <pcl/point_types_conversion.h>
 #include <pcl/surface/gp3.h>
 #include <pcl/features/rops_estimation.h>
-
-#include <gtsam/geometry/Rot3.h>
-#include <gtsam/geometry/Pose3.h>
-#include <gtsam/geometry/Rot2.h>
-#include <gtsam/geometry/Pose2.h>
 
 #include <ros/ros.h>
 #include <std_msgs/Int64.h>
@@ -64,7 +54,7 @@
 #include <aloam_velodyne/LCPair.h>
 #include <aloam_velodyne/LocalMapAndPose.h>
 #include <aloam_velodyne/PointCloud2List.h>
-#include <aloam_velodyne/Float64MultiArrayArray.h>
+#include <aloam_velodyne/PointCloud2PoseIdx.h>
 
 
 #include "aloam_velodyne/common.h"
@@ -72,42 +62,22 @@
 
 #include "scancontext/Scancontext.h"
 
-using namespace gtsam;
-
 typedef pcl::SHOT352 ShotFeature;
 
 std::mutex mKeyFrameBuf;
 std::mutex mLocalMapBuf;
-std::mutex globalKeypointBuf;
-std::vector<std::pair<int, int>> ICPPassedPair;
 std::queue<pcl::PointCloud<PointType>::Ptr> keyFrameQue;
 std::queue<pcl::PointCloud<PointType>::Ptr> localMapPclQue;
 std::queue<geometry_msgs::Pose> localMapPoseQue;
 
-// vector<tuple<int, string, int>> v2;
-// v2.push_back(make_tuple(2, "cbg", 7));
-// std::vector<std::pair<PointType, geometry_msgs::Pose>> keypointsFeatureVector;
-pcl::VoxelGrid<PointType> downSizeFilterScancontext;
-pcl::PointCloud<PointType>::Ptr KeypointsMergeMapCache(new pcl::PointCloud<PointType>());
-pcl::PointCloud<pcl::Histogram<135>>::Ptr DescriptorsMergeMapCache(new pcl::PointCloud<pcl::Histogram<135>>());
-pcl::PointCloud<PointType>::Ptr globalKeypointsMergeMap(new pcl::PointCloud<PointType>());
-
 SCManager scManager;
 double scDistThres, scMaximumRadius;
+std::string sc_source = "keyframe";
 
-ros::Publisher pubLCdetectResult, pubKeyPointResult, pubKeyPointDisplay;
+ros::Publisher pubLCdetectResult, pubKeyPointResult, pubKeyPointDisplay, pubPCtest;
 
 int KeyFrameNum = 0;
-int LocalMapNum = 0;
-int LocalMapIdxRange = 6;
-int globalKeypointsVectorSize = 0;
-
-int Local_map_idx = 6;
-int recentIdxprocessed = Local_map_idx;
-float Local_map_boundary = 25.0;
-pcl::PointXYZ lastCenterPoint = pcl::PointXYZ(0, 0, 0);
-
-std::string sc_source = "keyframe";
+int DenseFrameNum = 0;
 
 Eigen::Affine3f rosPoseToEigenAffine(const geometry_msgs::Pose& rosPose) {
     Eigen::Affine3f eigenAffine;
@@ -200,16 +170,17 @@ void keyframeHandler(const sensor_msgs::PointCloud2::ConstPtr &_thisKeyFrame) {
     KeyFrameNum++;
 }
 
-void denseFrameHandler(const aloam_velodyne::LocalMapAndPose::ConstPtr &_LocalMapAndPose){
+void denseFrameHandler(const aloam_velodyne::PointCloud2PoseIdx::ConstPtr &_LocalMapAndPose){
     // ROSmsg 타입의 pointcloud를 pcl::PointCloud 로 변환
     pcl::PointCloud<PointType>::Ptr thisKeyFrameDS(new pcl::PointCloud<PointType>());
-    pcl::fromROSMsg(_LocalMapAndPose->point_cloud, *thisKeyFrameDS);
+    pcl::fromROSMsg(_LocalMapAndPose->point_cloud1, *thisKeyFrameDS);
 
     mLocalMapBuf.lock();
     localMapPoseQue.push(_LocalMapAndPose->pose);
     // 들어온 keyFrame을 keyFrameQue에 push
     localMapPclQue.push(thisKeyFrameDS);
     mLocalMapBuf.unlock();
+    DenseFrameNum++;
 }
 
 void ScancontextProcess(void) {
@@ -230,12 +201,17 @@ void ScancontextProcess(void) {
                 *frontData = *global2local(frontData, frontPoseData);
                 scManager.makeAndSaveScancontextAndKeys(*frontData);
 
+                sensor_msgs::PointCloud2 localMapMsg;
+                pcl::toROSMsg(*frontData, localMapMsg);
+                localMapMsg.header.frame_id = "/camera_init";
+                pubPCtest.publish(localMapMsg);
+
                 // Search Loop by SC.
                 auto detectResult = scManager.detectLoopClosureID(); // first: nn index, second: yaw diff 
                 int SCclosestHistoryFrameID = detectResult.first;
                 if( SCclosestHistoryFrameID != -1 ) { 
                     const int prev_node_idx = SCclosestHistoryFrameID;
-                    const int curr_node_idx = KeyFrameNum - 1; // because cpp starts 0 and ends n-1
+                    const int curr_node_idx = DenseFrameNum - 1; // because cpp starts 0 and ends n-1
                     // cout << "Loop detected! - between " << prev_node_idx << " and " << curr_node_idx << "" << endl;
 
                     aloam_velodyne::LCPair pair;
@@ -296,13 +272,11 @@ int main(int argc, char **argv)
     scManager.setSCdistThres(scDistThres);
     scManager.setMaximumRadius(scMaximumRadius);
 
-    float filter_size = 0.1;
-    downSizeFilterScancontext.setLeafSize(filter_size, filter_size, filter_size);
-
 	ros::Subscriber subKeyFrameDS = nh.subscribe<sensor_msgs::PointCloud2>("/keyframeForLC", 100, keyframeHandler);
-    ros::Subscriber subKeyLocalMap = nh.subscribe<aloam_velodyne::LocalMapAndPose>("/denseFrameForLC", 100, denseFrameHandler);
+    ros::Subscriber subKeyLocalMap = nh.subscribe<aloam_velodyne::PointCloud2PoseIdx>("/denseFrameForLC", 100, denseFrameHandler);
 
 	pubLCdetectResult = nh.advertise<aloam_velodyne::LCPair>("/LCdetectResult", 100);
+    pubPCtest = nh.advertise<sensor_msgs::PointCloud2>("/PCtest_inSC", 100);
     // pubKeyPointResult = nh.advertise<aloam_velodyne::PointCloud2List>("/keyPointResult", 100);
 
     std::thread threadSC(ScancontextProcess);
