@@ -24,6 +24,8 @@
     <param name="sc_dist_thres" type="double" value="0.2"/> <!-- SC-A-LOAM, if want no outliers, use 0.1-0.15 -->
     <!-- <param name="sc_max_radius" type="double" value="20.0"/> 20 or 40 for indoor -->
     <param name="sc_max_radius" type="double" value="40.0"/> <!-- for outdoor -->
+    <param name="sc_source" type="string" value="denseFrame"/> <!-- keyframe or denseFrame -->
+    
 
     <!-- utils -->
     <param name="save_directory" type="string" value="/home/user/Documents/scaloam_scd_saver/data/00/"/>  <!-- CHANGE THIS and end with / -->
@@ -36,6 +38,8 @@
     <node pkg="aloam_velodyne" type="alaserOdometry" name="alaserOdometry" output="screen" />
     <node pkg="aloam_velodyne" type="alaserMapping" name="alaserMapping" output="screen" />
     <node pkg="aloam_velodyne" type="alaserPGO" name="alaserPGO" output="screen" />
+    <!-- <node pkg="aloam_velodyne" type="alaserSC" name="alaseraSC" output="screen" /> -->
+    <!-- <node pkg="aloam_velodyne" type="alaserScDetector" name="alaserScDetector" output="screen" /> -->
 
     <arg name="rviz" default="true" />
     <group if="$(arg rviz)">

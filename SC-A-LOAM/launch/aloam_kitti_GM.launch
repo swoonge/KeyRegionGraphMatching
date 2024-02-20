@@ -19,7 +19,7 @@
     <!-- <param name="HarrisThreshold" type="double" value="1e-9"/>
     <param name="HarrisThreshold" type="double" value="1e-9"/> -->
 
-    <param name="rops_RadiusSearch" type="double" value="3.0"/>
+    <!-- <param name="rops_RadiusSearch" type="double" value="3.0"/>
     <param name="rops_NumberOfPartitionBins" type="int" value="5"/>
     <param name="rops_NumberOfRotations" type="int" value="3"/>
     <param name="rops_SupportRadius" type="double" value="3.0"/>
@@ -28,7 +28,7 @@
     <param name="triangulation_setMu" type="double" value="10.0"/>
     <param name="triangulation_setMaximumNearestNeighbors" type="int" value="70"/>
 
-    <param name="localGraphMu" type="double" value="1.5"/>
+    <param name="localGraphMu" type="double" value="1.5"/> -->
 
     <!-- SC-A-LOAM -->
     <param name="keyframe_meter_gap" type="double" value="3.0"/> 
