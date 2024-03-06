@@ -2,6 +2,7 @@
 # -- coding: utf-8 --
 
 import argparse
+import time
 # import sys
 import rospy
 import numpy as np
@@ -28,6 +29,8 @@ from geometry_msgs.msg import Pose
 
 import threading
 
+LocalMapBoundary = 25.0
+
 class KeyPointStorage():
     # 여기서 denseFramePC도 모아두고, keyPointPC는 받아서 잘 머지해서 통합해서 모아두고(keyPointPC에), get함수를 통해 여러 pc에 접근하는 방식으로 구성
     def __init__(self, opt) -> None:
@@ -39,101 +42,139 @@ class KeyPointStorage():
         self.rawDenseFramePCList = []
         self.rawKeyPointPCList = []
         self.keyPointPCList = []
+        self.keypoin_descriptors_list = []
         self.denseFramePoseList = [] # geometry_msgs.msg.Pose
-        self.denseFrameCount = self._keyPointMergeCount = 0
-        self.localKeyPointPCList = [] # = o3d.geometry.PointCloud()
+        self.denseFrameCount = 0
+        # self.localKeyPointPCList = [] # = o3d.geometry.PointCloud()
         self.localMapRange = opt.localMapRange
         
+        self.cumulative_distance = 0.0
+        self.keypoint_merge_range = [0, 0, 0, 0, 0]
         # self.keyPointPC.points = o3d.utility.Vector3dVector(np.array([]))
 
         self.mutexDenseFrame = threading.Lock()
 
     def _denseFrameHandler(self, denseFrameMsg):
+        # denseFrameMsg로부터 sub한 데이터들 저장
         with self.mutexDenseFrame:
-            self.rawDenseFramePCList.append(orh.rospc_to_o3dpc(denseFrameMsg.point_cloud1))
-            self.rawKeyPointPCList.append(orh.rospc_to_o3dpc(denseFrameMsg.point_cloud2))
+            self.rawDenseFramePCList.append(orh.rospc_to_o3dpc(denseFrameMsg.point_cloud1)) # localDensemap 저장
+            self.rawKeyPointPCList.append(orh.rospc_to_o3dpc(denseFrameMsg.point_cloud2)) # localDensemap에 대한 keypoint들 저장
             # self.keyPointPC += self.keyPointPCList[-1]
-            self.denseFramePoseList.append([denseFrameMsg.pose.position.x, denseFrameMsg.pose.position.y, denseFrameMsg.pose.position.z])
-            self.keyPointPCList.append(o3d.geometry.PointCloud())
+            self.denseFramePoseList.append(np.array([denseFrameMsg.pose.position.x, denseFrameMsg.pose.position.y, denseFrameMsg.pose.position.z])) # 해당 map의 pose 저장
+            self.keyPointPCList.append(o3d.geometry.PointCloud()) # 차후 _keyPointMerge에서 merge에서 최종 keypoint가 들어갈 빈 list 생성
+            start_time = time.time()
+            self.keypoin_descriptors_list.append(self.compute_FPFH_descriptor(self.rawDenseFramePCList[-1], 0.2)) # 0.1초 정도
+            execution_time = time.time() - start_time
             self.denseFrameCount += 1
-        if self._keyPointMergeCount != (self.denseFrameCount//5):
-            self._keyPointMerge()
-            self._keyPointMergeCount = self.denseFrameCount//5
-            print(self._keyPointMergeCount, self.denseFrameCount)
+
+        # keypointMerge가 수행되는 조건
+            # LocalMapBoundary만큼의 경로가 지나갔을 때 한번 씩 수행하면 합리적일 것으로 생각 됨.
+            # 따라서 denseFramePose의 변위를 누적하여 누적 이동 거리가 LocalMapBoundary를 넘어설 때 마다 수행.
+        if self.denseFrameCount > 1:
+            self.cumulative_distance += np.linalg.norm(self.denseFramePoseList[-2] - self.denseFramePoseList[-1])
+            
+            if self.cumulative_distance > LocalMapBoundary:
+                print("[cumulative_distance] ", self.cumulative_distance, ", perform _keyPointMerge()")
+                self.cumulative_distance = 0.0
+                self.keypoint_merge_range[0:4] = self.keypoint_merge_range[1:]
+                self.keypoint_merge_range[4] = self.denseFrameCount - 1 # 길이가 아닌 idx저장
+
+                # 충분히 _keyPointMerge가 실행 되어 keypoint가 누적 되었을 경우에만 실행
+                if self.keypoint_merge_range[3] != 0:
+                    self._keyPointMerge()
             
     def _keyPointMerge(self):
         localDensePcd = o3d.geometry.PointCloud()
-        for i in range(self.denseFrameCount-10, self.denseFrameCount):
-            localDensePcd += self.rawKeyPointPCList[i]
-        # print("_keyPointMerge 포인트 개수: ", len(localDensePcd.points))
-        # with o3d.utility.VerbosityContextManager(o3d.utility.VerbosityLevel.Debug) as cm:
-            # labels = pcd.cluster_dbscan(eps=0.02, min_points=10, print_progress=True)
-        labels = np.array(localDensePcd.cluster_dbscan(eps=0.015, min_points=3, print_progress=False))
-        max_label = labels.max()
         
+        # merge하는 범위는 LocalMapBoundary범위의 두배를 커버하는 범위에 대해 수행
+        for i in range(self.keypoint_merge_range[1], self.keypoint_merge_range[3]):
+            localDensePcd += self.rawKeyPointPCList[i]
+        # dbscan 수행
+        labels = np.array(localDensePcd.cluster_dbscan(eps=0.15, min_points=4, print_progress=False))
+        max_label = labels.max() # max_label == 클러스터 개수
+
+        # mergedKeypoints에 각 label(클러스터)끼리 배열
         mergedKeypoints = [[] for _ in range(max_label+1)]
         for idx, label in enumerate(labels):
             if label >= 0:
                 mergedKeypoints[label].append(np.array(localDensePcd.points[idx]))
-        # print(mergedKeypoints)
+
+        # keypointChach에 각 클러스터의 평균점을 추가
         keypointChach = o3d.geometry.PointCloud()
         for i in mergedKeypoints:
             p = np.mean(i, axis=0)
             keypointChach.points.append(p)
-        self.localKeyPointPCList.append(keypointChach)
+        # self.localKeyPointPCList.append(keypointChach)
 
-        self.optimalKeyPointPCList()
+        # keypointChach의 점들을 가장 가까운 keypose에 assign 및 merge
+        self._optimalKeyPointPCList(keypointChach)
             
-    def optimalKeyPointPCList(self):
-        # print(len(self.localKeyPointPCList))
-        if len(self.localKeyPointPCList) >= self.localMapRange//5:
-            if (self.denseFrameCount > self.localMapRange*2):
-                poseRange = self.denseFrameCount-self.localMapRange*2
+    def _optimalKeyPointPCList(self, keypointChach):
+        # keypose중 최근의 keypose만 탐색하기 위해 범위의 keypose를 pointcloud형식으로 추출(후에 거리계산이 편하도록)
+        poseChach = o3d.geometry.PointCloud()
+        poseChach.points= o3d.utility.Vector3dVector(np.array(self.denseFramePoseList)[self.keypoint_merge_range[0]:self.keypoint_merge_range[4]])
+
+        for p in keypointChach.points:
+            # 최근 범위의 poseChach와의 거리 계산
+            distances = np.linalg.norm(poseChach.points - p, axis=1)
+            # print(np.min(np.linalg.norm(poseChach.points - p, axis=1)))
+            if (np.min(np.linalg.norm(poseChach.points - p, axis=1))) > LocalMapBoundary: # 가끔 위로 튀는 점들 제거
+                continue
+            idx = np.argmin(distances)+self.keypoint_merge_range[0]
+
+            if len(self.keyPointPCList[idx].points) == 0:
+                self.keyPointPCList[idx].points.append(p)
             else:
-                poseRange = 0
-            keypointChach = self.localKeyPointPCList[0]
-            self.localKeyPointPCList = self.localKeyPointPCList[1:]
-            poseChach = o3d.geometry.PointCloud()
-            poseChach.points= o3d.utility.Vector3dVector(np.array(self.denseFramePoseList)[poseRange:])
-            for p in keypointChach.points:
-                distances = np.linalg.norm(poseChach.points - p, axis=1)
-                # print(np.min(np.linalg.norm(poseChach.points - p, axis=1)))
-                if (np.min(np.linalg.norm(poseChach.points - p, axis=1))) > 30:
+                if (np.min(np.linalg.norm(self.keyPointPCList[idx].points - p, axis=1)) > 0.5):
+                    self.keyPointPCList[idx].points.append(p)
+                else:
                     continue
-                self.keyPointPCList[np.argmin(distances)+poseRange].points.append(p)
 
-                # 여기서 과조건이 걸리는지 이거 하면 좀 많은 point가 저장이 되지 않고 날아가 버린다. 여기 수정하면 keypoint쪽은 마무리 될듯.
-                # if len(self.keyPointPCList[np.argmin(distances)+poseRange].points) > 0:
-                #     if (np.argmin(np.linalg.norm(self.keyPointPCList[np.argmin(distances)+poseRange].points - p, axis=1)) > 0.15):
-                #         self.keyPointPCList[np.argmin(distances)+poseRange].points.append(p)
-                # else:
-                #     self.keyPointPCList[np.argmin(distances)+poseRange].points.append(p)
-                    
-            
-        # rebatchRange = range(len(self.keyPointPCList)-2*self.localMapRange, len(self.keyPointPCList)-self.localMapRange)
-        # for i in rebatchRange:
-        #     for point in self.keyPointPCList[i]:
-        #         for p in rebatchRange:
-        #             self.denseFramePoseList[]
+    def compute_FPFH_descriptor(self, pcd, voxel_size):
+        radius_normal = voxel_size * 2
+        # print(":: Estimate normal with search radius %.3f." % radius_normal)
+        pcd.estimate_normals(
+            o3d.geometry.KDTreeSearchParamHybrid(radius=radius_normal, max_nn=30))
+
+        radius_feature = voxel_size * 5
+        # print(":: Compute FPFH feature with search radius %.3f." % radius_feature)
+        pcd_fpfh = o3d.pipelines.registration.compute_fpfh_feature(
+            pcd,
+            o3d.geometry.KDTreeSearchParamHybrid(radius=radius_feature, max_nn=100))
+        return pcd_fpfh
 
     def testDisplay(self):
         # pcMsg = PointCloud2
         PCChach = o3d.geometry.PointCloud()
-        for i in self.keyPointPCList:
+        for i in self.keyPointPCList[0:self.keypoint_merge_range[0]]:
             PCChach+=i
-        print("[KeyPoints 길이] : ", len(PCChach.points))
+        # print("[KeyPoints 길이] : ", len(PCChach.points))
         pcMsg = orh.o3dpc_to_rospc(PCChach)
         pcMsg.header.frame_id = "/camera_init"
         self.pubPCtest.publish(pcMsg)
 
         PCChach2 = o3d.geometry.PointCloud()
-        for i in self.localKeyPointPCList:
+        for i in self.keyPointPCList[self.keypoint_merge_range[0]:self.keypoint_merge_range[4]]:
             PCChach2+=i
         pcMsg2 = orh.o3dpc_to_rospc(PCChach2)
         pcMsg2.header.frame_id = "/camera_init"
         self.pubPCtest2.publish(pcMsg2)
 
 
+def prepare_dataset(voxel_size):
+    print(":: Load two point clouds and disturb initial pose.")
+
+    demo_icp_pcds = o3d.data.DemoICPPointClouds()
+    source = o3d.io.read_point_cloud(demo_icp_pcds.paths[0])
+    target = o3d.io.read_point_cloud(demo_icp_pcds.paths[1])
+    trans_init = np.asarray([[0.0, 0.0, 1.0, 0.0], [1.0, 0.0, 0.0, 0.0],
+                             [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]])
+    source.transform(trans_init)
+    draw_registration_result(source, target, np.identity(4))
+
+    source_down, source_fpfh = preprocess_point_cloud(source, voxel_size)
+    target_down, target_fpfh = preprocess_point_cloud(target, voxel_size)
+    return source, target, source_down, target_down, source_fpfh, target_fpfh
 
 def main(opt):
     KeyPoints = KeyPointStorage(opt)

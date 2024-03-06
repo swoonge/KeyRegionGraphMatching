@@ -11,7 +11,9 @@
     <param name="mapping_line_resolution" type="double" value="0.1"/> <!-- A-LOAM -->
     <param name="mapping_plane_resolution" type="double" value="0.2"/> <!-- A-LOAM -->
 
+    <!-- keypoint extraction -->
     <param name="LocalMapBoundary" type="double" value="25.0"/>
+    <param name="KeypointsExtractionSkipFrame" type="int" value="1"/>
 
     <param name="HarrisRadius" type="double" value="1.0"/>
     <param name="HarrisRadiusSearch" type="double" value="30"/>
@@ -26,7 +28,6 @@
     <param name="sc_max_radius" type="double" value="40.0"/> <!-- for outdoor -->
     <param name="sc_source" type="string" value="denseFrame"/> <!-- keyframe or denseFrame -->
     
-
     <!-- utils -->
     <param name="save_directory" type="string" value="/home/user/Documents/scaloam_scd_saver/data/00/"/>  <!-- CHANGE THIS and end with / -->
 

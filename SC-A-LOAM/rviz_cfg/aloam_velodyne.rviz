@@ -8,6 +8,7 @@ Panels:
         - /odometry1/odomPath1
         - /mapping1/mappingPath1
         - /pgoOdom1/Shape1
+        - /testPC21
       Splitter Ratio: 0.49117645621299744
     Tree Height: 746
   - Class: rviz/Selection
@@ -440,7 +441,7 @@ Visualization Manager:
       Axis: Z
       Channel Name: intensity
       Class: rviz/PointCloud2
-      Color: 245; 121; 0
+      Color: 52; 101; 164
       Color Transformer: FlatColor
       Decay Time: 0
       Enabled: true
@@ -468,7 +469,7 @@ Visualization Manager:
       Axis: Z
       Channel Name: intensity
       Class: rviz/PointCloud2
-      Color: 52; 101; 164
+      Color: 245; 121; 0
       Color Transformer: FlatColor
       Decay Time: 0
       Enabled: true
@@ -515,7 +516,7 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz/XYOrbit
-      Distance: 246.9895477294922
+      Distance: 89.343994140625
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
@@ -523,17 +524,17 @@ Visualization Manager:
         Value: false
       Field of View: 0.7853981852531433
       Focal Point:
-        X: 0
-        Y: 0
-        Z: 0
-      Focal Shape Fixed Size: false
+        X: -4.977538108825684
+        Y: 4.424983024597168
+        Z: 6.0306261730147526e-05
+      Focal Shape Fixed Size: true
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.44039857387542725
+      Pitch: 0.5356736183166504
       Target Frame: aft_pgo
-      Yaw: 2.6004014015197754
+      Yaw: 2.608043670654297
     Saved: ~
 Window Geometry:
   Displays:
@@ -551,7 +552,7 @@ Window Geometry:
   Views:
     collapsed: false
   Width: 1920
-  X: 3000
-  Y: 287
+  X: 3840
+  Y: 0
   pgo Views:
     collapsed: false
