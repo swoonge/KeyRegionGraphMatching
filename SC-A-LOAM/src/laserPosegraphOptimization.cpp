@@ -1210,7 +1210,7 @@ int main(int argc, char **argv)
 	nh.param<double>("keyframe_deg_gap", keyframeDegGap, 10.0); // pose assignment every k deg rot 
     keyframeRadGap = deg2rad(keyframeDegGap);
 
-    nh.param<float>("LocalMapBoundary", LocalMapBoundary, 30.0);
+    nh.param<float>("LocalMapB애oundary", LocalMapBoundary, 30.0);
 
     ISAM2Params parameters;
     parameters.relinearizeThreshold = 0.01;
