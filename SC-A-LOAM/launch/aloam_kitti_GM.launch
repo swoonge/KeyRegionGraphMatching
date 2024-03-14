@@ -31,6 +31,7 @@
     <param name="triangulation_setMaximumNearestNeighbors" type="int" value="70"/>
 
     <param name="localGraphMu" type="double" value="1.5"/> -->
+    <param name="SaveMode" type="bool" value="false"/>
 
     <!-- SC-A-LOAM -->
     <param name="keyframe_meter_gap" type="double" value="3.0"/> 

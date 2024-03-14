@@ -172,6 +172,7 @@ float HarrisThreshold = 0.000001;
 float LocalMapBoundary = 20.0; // pubLocalMap
 int keypointsVectorSize = 0;
 int KeypointsExtractionSkipFrame = 1;
+bool SaveMode = false;
 
 // ros::Publisher pubMapAftPGO, pubOdomAftPGO, pubPathAftPGO, pubKeyPointglobal, pubKeyPointlocal, pubKeyPointglobalGraph, pubKeyPointlocalGraph;
 // ros::Publisher pubKeyPoseforLC, pubKeyLocalMapforLC, pubLoopScanLocal, pubLoopSubmapLocal, pubConstraintEdge, pubHandlc, pubLoopIcpResult, pubDisplayLocalMap;//, pubLoopIcpResult;
@@ -181,7 +182,7 @@ ros::Publisher pubMapAftPGO, pubOdomAftPGO, pubPathAftPGO, pubLoopScanLocal, pub
 ros::Publisher pubOdomRepubVerifier;
 
 // custem publisher
-ros::Publisher pubKeyFrameForLC, pubDisplayDenseFrame, pubDenseFrameForLC;
+ros::Publisher pubKeyFrameForLC, pubDisplayDenseFrame, pubDenseFrameForLC, pubDenseFrameForSaver;
 // ros::Publisher
 
 std::string save_directory;
@@ -994,6 +995,8 @@ int currentKeyPoseIdxForLocalMap = 0;
 int rangeOfKeyPoseIdxForLocalMap[2] = {0, 0};
 int localMapPointsNum[2] = {1, 0};
 std::vector<std::pair<int, pcl::PointCloud<PointType>::Ptr>> localMapCashe;
+//  std::tuple<int, double, std::string> myTuple(10, 3.14, "Hello");
+std::vector<std::tuple<int, pcl::PointCloud<PointType>::Ptr, pcl::PointCloud<PointType>::Ptr>> Chach_map_saver;
 
 pcl::PointXYZ pointToPCL(const Pose6D& pose) {
     pcl::PointXYZ pcl_point;
@@ -1057,7 +1060,7 @@ void setNewLocalMap(Pose6D currentPose) {
         }
     }
 }
-
+int process_save_count = 0;
 /// @brief  pubDisplayDenseFrame과 pubDenseFrameForLC을 pub하기 위한 함수
 /// @param  void
 void pubLocalMap(void) {
@@ -1068,6 +1071,7 @@ void pubLocalMap(void) {
     
     // 이거 하는 동안은 isam이 돌면 안됨.
     while(rangeOfKeyPoseIdxForLocalMap[1] < recentIdxUpdated) {
+        process_save_count = 0;
         rangeOfKeyPoseIdxForLocalMap[1] += 1;
         mKF.lock();
         *localMap += *local2global(keyframeLaserClouds[rangeOfKeyPoseIdxForLocalMap[1]], keyframePosesForLocalMap[rangeOfKeyPoseIdxForLocalMap[1]]);
@@ -1126,6 +1130,8 @@ void pubLocalMap(void) {
                 pcl::toROSMsg(*currentkeypoints, currentkeypointsMsg);
                 currentkeypointsMsg.header.frame_id = "/camera_init";
 
+                Chach_map_saver.push_back(std::make_tuple(currentKeyPoseIdxForLocalMap, localMap, currentkeypoints));
+
                 // 즉, 일정 범위의 맵을 포즈 값과 함께 전송한다.
                 LocalMapAndPoseMsg.pose = rosPose;
                 LocalMapAndPoseMsg.point_cloud1 = localMapMsg;
@@ -1171,6 +1177,53 @@ void process_local_map(void){
         rate.sleep();
         if(recentIdxUpdated > 5){ // 최소 5개의 keypose가 들어오기 전에는 돌지 않음
             pubLocalMap();
+            
+        }
+    }
+}
+
+void pub_for_saver(void) {
+    float Frequency = 100.0;
+    ros::Rate rate(Frequency);
+    for (const auto& tuple : Chach_map_saver) {
+        aloam_velodyne::PointCloud2PoseIdx LocalMapAndPoseMsg;
+        geometry_msgs::Pose rosPose = gtsamPoseToROSPose(keyframePosesUpdated[std::get<0>(tuple)]);
+
+        sensor_msgs::PointCloud2 localMapMsg;
+        pcl::toROSMsg(*std::get<1>(tuple), localMapMsg);
+        localMapMsg.header.frame_id = "/camera_init";
+        
+        sensor_msgs::PointCloud2 currentkeypointsMsg;
+        pcl::toROSMsg(*std::get<2>(tuple), currentkeypointsMsg);
+        currentkeypointsMsg.header.frame_id = "/camera_init";
+
+        LocalMapAndPoseMsg.pose = rosPose;
+        LocalMapAndPoseMsg.point_cloud1 = localMapMsg;
+        LocalMapAndPoseMsg.point_cloud2 = currentkeypointsMsg;
+        LocalMapAndPoseMsg.idx = std::get<0>(tuple);
+        pubDenseFrameForSaver.publish(LocalMapAndPoseMsg);
+        rate.sleep();
+    }
+}
+
+void process_save(void) {
+    float Frequency = 0.2; // 0.1 means run onces every 10s
+    ros::Rate rate(Frequency);
+    while (ros::ok()) {
+        rate.sleep();
+        if (recentIdxUpdated > 5){
+            cout << process_save_count << endl;
+            process_save_count++;
+            if(process_save_count > 1) {
+                for(int i; i < 20; i++){
+                    cout << "" << endl;
+                }
+                cout << "[Saver] Start" << endl;
+                mtxPosegraph.lock();
+                pub_for_saver();
+                mtxPosegraph.unlock();
+                cout << "[Saver] End" << endl;
+            }
         }
     }
 }
@@ -1210,7 +1263,8 @@ int main(int argc, char **argv)
 	nh.param<double>("keyframe_deg_gap", keyframeDegGap, 10.0); // pose assignment every k deg rot 
     keyframeRadGap = deg2rad(keyframeDegGap);
 
-    nh.param<float>("LocalMapB애oundary", LocalMapBoundary, 30.0);
+    nh.param<float>("LocalMapBoundary", LocalMapBoundary, 30.0);
+    nh.param<bool>("SaveMode", SaveMode, false);
 
     ISAM2Params parameters;
     parameters.relinearizeThreshold = 0.01;
@@ -1248,15 +1302,20 @@ int main(int argc, char **argv)
 
     // custem Publisher for KeyRegionGraphMatching
     pubDenseFrameForLC = nh.advertise<aloam_velodyne::PointCloud2PoseIdx>("/denseFrameForLC", 100);
+    pubDenseFrameForSaver = nh.advertise<aloam_velodyne::PointCloud2PoseIdx>("/denseFrameForSaver", 100);
     pubDisplayDenseFrame = nh.advertise<sensor_msgs::PointCloud2>("/displayDenseFrame", 100);
     pubKeyFrameForLC = nh.advertise<sensor_msgs::PointCloud2>("/keyframeForLC", 100);
 
 	std::thread posegraph_slam {process_pg}; // pose graph construction
 	std::thread icp_calculation {process_icp}; // loop constraint calculation via icp 
 	std::thread isam_update {process_isam}; // if you want to call less isam2 run (for saving redundant computations and no real-time visulization is required), uncommment this and comment all the above runisam2opt when node is added. 
-    std::thread local_map {process_local_map}; // visualization - path (high frequency)
 	std::thread viz_map {process_viz_map}; // visualization - map (low frequency because it is heavy)
 	std::thread viz_path {process_viz_path}; // visualization - path (high frequency)
+    std::thread local_map {process_local_map}; // visualization - path (high frequency)
+    std::thread save {process_save}; // visualization - path (high frequency)
+    // if (SaveMode == true) {
+    //     std::thread save {process_save}; // visualization - path (high frequency)
+    // }
 
  	ros::spin();
 
