@@ -25,7 +25,7 @@
 #include <pcl/filters/voxel_grid.h>
 #include <pcl/octree/octree_pointcloud_voxelcentroid.h>
 #include <pcl/filters/crop_box.h> 
-#include <pcl_conversions/pcl_conversions.h>
+// #include <pcl_conversions/pcl_conversions.h>
 #include <pcl/filters/statistical_outlier_removal.h>
 #include <pcl/filters/passthrough.h>
 #include <pcl/segmentation/sac_segmentation.h>
@@ -195,7 +195,6 @@ std::vector<std::string> edges_str; // used in writeEdge
 
 gtsam::Pose3 Pose6DtoGTSAMPose3(const Pose6D& p);
 void pubLocalMap(void);
-pcl::PointXYZ pointToPCL(const Pose6D& pose);
 std::optional<gtsam::Pose3> doICPVirtualRelative( int _loop_kf_idx, int _curr_kf_idx );
 
 pcl::PointCloud<PointType>::Ptr saveClosedPointCloud(const pcl::PointCloud<PointType> &cloud_in, Pose6D centerPoint, float thres)
@@ -403,7 +402,7 @@ void keyPointHandler(const aloam_velodyne::PointCloud2List::ConstPtr &_keyPoints
         pcl::fromROSMsg(_keyPoints->keypoints[i], *thisKeyPoints);
         keypointsVector.push_back(thisKeyPoints);
         aloam_velodyne::Float64MultiArrayArray descriptorsCache;
-        for (int a = 0; a < thisKeyPoints->points.size(); a++){
+        for (size_t a = 0; a < thisKeyPoints->points.size(); a++){
             descriptorsCache.descriptor.push_back(_keyPoints->descriptors[i].descriptor[a]);
         }
         descriptorsVector.push_back(descriptorsCache);
@@ -1000,14 +999,6 @@ std::vector<std::pair<int, pcl::PointCloud<PointType>::Ptr>> localMapCashe;
 //  std::tuple<int, double, std::string> myTuple(10, 3.14, "Hello");
 std::vector<std::tuple<int, Pose6D, pcl::PointCloud<PointType>::Ptr, pcl::PointCloud<PointType>::Ptr>> Chach_map_saver;
 
-pcl::PointXYZ pointToPCL(const Pose6D& pose) {
-    pcl::PointXYZ pcl_point;
-    pcl_point.x = pose.x;
-    pcl_point.y = pose.y;
-    pcl_point.z = pose.z;
-    return pcl_point;
-}
-
 /// @brief pcl::PointCloud<PointType>에서 특정 위치점(localMapCenterPoint)을 기준으로 +-boundaryRange 밖의 점 제거(z축은 +-10 고정)
 /// @param cloudIn pcl::PointCloud<PointType>::Ptr
 /// @param localMapCenterPoint crop할 기준점
@@ -1032,40 +1023,11 @@ pcl::PointCloud<PointType>::Ptr CropPointcoud(pcl::PointCloud<PointType>::Ptr cl
     return cloudIn;
 }
 
-/// @brief void pubLocalMap(void)함수의 구성
-/// @param currentPose 
-// void setNewLocalMap(Pose6D currentPose) {
-//     localMap->clear();
-    
-//     mKF.lock();
-//     *localMap += *local2global(keyframeLaserClouds[currentKeyPoseIdxForLocalMap], currentPose);
-//     mKF.unlock();
-//     localMap = CropPointcoud(localMap, currentPose, LocalMapBoundary);
-//     // localMap = saveClosedPointCloud(*localMap, currentPose, LocalMapBoundary);
-
-//     local_map_points_num[0] = 1;
-//     local_map_points_num[1] = localMap->size();
-
-//     // currentKeyPoseIdxForLocalMap 기준 과거의 idx 탐색
-//     while(rangeOfKeyPoseIdxForLocalMap[0] > 0) {
-//         rangeOfKeyPoseIdxForLocalMap[0] -= 1;
-//         mKF.lock();
-//         *localMap += *local2global(keyframeLaserClouds[rangeOfKeyPoseIdxForLocalMap[0]], keyframePosesForLocalMap[rangeOfKeyPoseIdxForLocalMap[0]]);
-//         // *localMap += *saveClosedPointCloud(*local2global(keyframeLaserClouds[rangeOfKeyPoseIdxForLocalMap[0]], keyframePosesForLocalMap[rangeOfKeyPoseIdxForLocalMap[0]]), currentPose, LocalMapBoundary);
-//         mKF.unlock();
-//         // localMap = saveClosedPointCloud(*localMap, currentPose, LocalMapBoundary);
-//         localMap = CropPointcoud(localMap, currentPose, LocalMapBoundary);
-//         local_map_points_num[0] = local_map_points_num[1];
-//         local_map_points_num[1] = localMap->size();
-//         if((float(local_map_points_num[1])/float(local_map_points_num[0]) < 1.1)) {
-//             break;
-//         }
-//     }
-// }
-// int processed_kp_idx_for_local_map = 0;
 /// @brief  pubDisplayDenseFrame과 pubDenseFrameForLC을 pub하기 위한 함수
 /// @param  void
+int process_save_count = 0;
 void pubLocalMap(void) {
+    process_save_count = 0;
     Pose6D currentPose = keyframePosesForLocalMap[local_map_idx_range[0]];
     
     if (local_map_idx_range[0] == 0) {
@@ -1090,7 +1052,7 @@ void pubLocalMap(void) {
         downSizeFilterLocalMap.filter(*localMap);
         local_map_points_num = localMap->size();
 
-        for (int i = local_map_idx_range[1]; i <= recentIdxUpdated; i++) {
+        for (int i = local_map_idx_range[1] + 1; i <= recentIdxUpdated; i++) {
             *localMap += *local2global(keyframeLaserClouds[i], keyframePosesForLocalMap[i]);
             localMap = CropPointcoud(localMap, currentPose, LocalMapBoundary);
             downSizeFilterLocalMap.setInputCloud(localMap);
@@ -1105,117 +1067,85 @@ void pubLocalMap(void) {
         }
     }
 
-    Pose6D currentPose = keyframePosesForLocalMap[local_map_idx_range[0]]; // currentKeyPoseIdxForLocalMap = 0 으로 초기화 되어 있음
-    if (local_map_idx_range[0] == rangeOfKeyPoseIdxForLocalMap[1]){ // rangeOfKeyPoseIdxForLocalMap[2] = {0,0} 으로 초기화 되어 있음
-        setNewLocalMap(currentPose);
-    }
+    // 이상치 제거 (Statistical Outlier Removal)
+    pcl::StatisticalOutlierRemoval<PointType> sor;
+    sor.setInputCloud(localMap);
+    sor.setMeanK(50); // 주변 이웃의 수
+    sor.setStddevMulThresh(1.0); // 표준 편차의 배수
+    sor.filter(*localMap);
+
+    // NormalEstimation
+    cout << "              [LocalMap test, K] " << local_map_idx_range[0] << " % " << local_map_idx_range[1] <<  endl;
+    pcl::PointCloud<pcl::Normal>::Ptr normals(new pcl::PointCloud<pcl::Normal>);
+    pcl::NormalEstimation<PointType, pcl::Normal> ne;
+    pcl::search::KdTree<PointType>::Ptr treeNe(new pcl::search::KdTree<PointType> ());
+    ne.setSearchMethod(treeNe);
+    ne.setKSearch(0);
+    ne.setViewPoint(currentPose.x, currentPose.y, currentPose.z);
+    ne.setRadiusSearch(0.2f * 2);
+    ne.setInputCloud(localMap);
+    ne.compute(*normals);
+
+    // HarrisKeypoint3D 추출
+    pcl::PointCloud<PointType>::Ptr currentkeypoints(new pcl::PointCloud<PointType>);
+    pcl::HarrisKeypoint3D <PointType, PointType> detector;
+    detector.setNonMaxSupression (true);
+    detector.setInputCloud (localMap);
+    detector.setRadiusSearch(100);
+    detector.setRadius (0.2f * 5);
+    detector.setThreshold (HarrisThreshold);
+    detector.setNormals(normals);
+    detector.compute (*currentkeypoints);
+
+    // // FPFH 디스크립터 추출
+    // pcl::FPFHEstimation<PointType, pcl::Normal, pcl::FPFHSignature33> fpfh;
+    // fpfh.setInputCloud(localMap);
+    // fpfh.setInputNormals(normals);
+    // pcl::search::KdTree<PointType>::Ptr tree(new pcl::search::KdTree<PointType>);
+    // fpfh.setSearchMethod(tree);
+    // pcl::PointCloud<pcl::FPFHSignature33>::Ptr fpfhs (new pcl::PointCloud<pcl::FPFHSignature33> ());
+    // fpfh.setRadiusSearch(0.2f * 5);
+    // fpfh.compute (*fpfhs);
+
+    aloam_velodyne::PointCloud2PoseIdx LocalMapAndPoseMsg;
+    geometry_msgs::Pose rosPose = gtsamPoseToROSPose(currentPose);
     
-    // 이거 하는 동안은 isam이 돌면 안됨.
-    while(rangeOfKeyPoseIdxForLocalMap[1] < recentIdxUpdated) {
-        process_save_count = 0;
-        rangeOfKeyPoseIdxForLocalMap[1] += 1;
-        mKF.lock();
-        *localMap += *local2global(keyframeLaserClouds[rangeOfKeyPoseIdxForLocalMap[1]], keyframePosesForLocalMap[rangeOfKeyPoseIdxForLocalMap[1]]);
-        mKF.unlock();
-        localMap = CropPointcoud(localMap, currentPose, LocalMapBoundary);
-        local_map_points_num[0] = local_map_points_num[1];
-        local_map_points_num[1] = localMap->size();
-        
-        if((float(local_map_points_num[1])/float(local_map_points_num[0]) < 1.1)) {
-            cout << "[LocalMap] Pub new localMap " << currentKeyPoseIdxForLocalMap <<": " << rangeOfKeyPoseIdxForLocalMap[0] << "~" << rangeOfKeyPoseIdxForLocalMap[1] << " || local_map_points_num Rate: " << float(local_map_points_num[1])/float(local_map_points_num[0]) << endl;
+    sensor_msgs::PointCloud2 localMapMsg;
+    pcl::toROSMsg(*localMap, localMapMsg);
+    localMapMsg.header.frame_id = "/camera_init";
 
-            localMap = saveClosedPointCloud(*localMap, currentPose, LocalMapBoundary);
+    sensor_msgs::PointCloud2 currentkeypointsMsg;
+    pcl::toROSMsg(*currentkeypoints, currentkeypointsMsg);
+    currentkeypointsMsg.header.frame_id = "/camera_init";
 
-            downSizeFilterLocalMap.setInputCloud(localMap);
-            downSizeFilterLocalMap.filter(*localMap);
+    // localMap, currentkeypoints는 global2local을 해서 저장해둬야 함.
 
-            // 이상치 제거 (Statistical Outlier Removal)
-            pcl::StatisticalOutlierRemoval<PointType> sor;
-            sor.setInputCloud(localMap);
-            sor.setMeanK(50); // 주변 이웃의 수
-            sor.setStddevMulThresh(1.0); // 표준 편차의 배수
-            sor.filter(*localMap);
+    Chach_map_saver.push_back(std::make_tuple(local_map_idx_range[0], currentPose, global2local(localMap, currentPose), global2local(currentkeypoints, currentPose)));
 
-            // NormalEstimation
-            cout << "              [LocalMap test, K] " << currentKeyPoseIdxForLocalMap << " % " << KeypointsExtractionSkipFrame << " = " << currentKeyPoseIdxForLocalMap % KeypointsExtractionSkipFrame << endl;
-            pcl::PointCloud<pcl::Normal>::Ptr normals(new pcl::PointCloud<pcl::Normal>);
-            pcl::NormalEstimation<PointType, pcl::Normal> ne;
-            pcl::search::KdTree<PointType>::Ptr treeNe(new pcl::search::KdTree<PointType> ());
-            ne.setSearchMethod(treeNe);
-            ne.setKSearch(0);
-            ne.setViewPoint(currentPose.x, currentPose.y, currentPose.z);
-            ne.setRadiusSearch(0.4f); // 0.2, 2
-            ne.setInputCloud(localMap);
-            ne.compute(*normals);
+    // 즉, 일정 범위의 맵을 포즈 값과 함께 전송한다.
+    LocalMapAndPoseMsg.pose = rosPose;
+    LocalMapAndPoseMsg.point_cloud1 = localMapMsg;
+    LocalMapAndPoseMsg.point_cloud2 = currentkeypointsMsg;
+    LocalMapAndPoseMsg.idx = local_map_idx_range[0];
+    pubDenseFrameForLC.publish(LocalMapAndPoseMsg);
+    pubDisplayDenseFrame.publish(localMapMsg);
 
-            // HarrisKeypoint3D 추출
-            pcl::PointCloud<PointType>::Ptr currentkeypoints(new pcl::PointCloud<PointType>);
-            pcl::HarrisKeypoint3D <PointType, PointType> detector;
-            detector.setNonMaxSupression (true);
-            detector.setInputCloud (localMap);
-            detector.setRadiusSearch(100);
-            detector.setRadius (1.0f);
-            detector.setThreshold (HarrisThreshold);
-            detector.setNormals(normals);
-            detector.compute (*currentkeypoints);
-
-            // FPFH 디스크립터 추출
-            pcl::FPFHEstimation<PointType, pcl::Normal, pcl::FPFHSignature33> fpfh;
-            fpfh.setInputCloud(localMap);
-            fpfh.setInputNormals(normals);
-            pcl::search::KdTree<PointType>::Ptr tree(new pcl::search::KdTree<PointType>);
-            fpfh.setSearchMethod(tree);
-            pcl::PointCloud<pcl::FPFHSignature33>::Ptr fpfhs (new pcl::PointCloud<pcl::FPFHSignature33> ());
-            fpfh.setRadiusSearch(0.2*2);
-            fpfh.compute (*fpfhs);
-
-            for (int i = 0; i < 33; i++) {
-                cout << fpfhs->points[2000].histogram[i] << ", ";
-
-            }
-            cout << endl;
-            
-
-            aloam_velodyne::PointCloud2PoseIdx LocalMapAndPoseMsg;
-            geometry_msgs::Pose rosPose = gtsamPoseToROSPose(currentPose);
-            
-            sensor_msgs::PointCloud2 localMapMsg;
-            pcl::toROSMsg(*localMap, localMapMsg);
-            localMapMsg.header.frame_id = "/camera_init";
-
-            sensor_msgs::PointCloud2 currentkeypointsMsg;
-            pcl::toROSMsg(*currentkeypoints, currentkeypointsMsg);
-            currentkeypointsMsg.header.frame_id = "/camera_init";
-
-            // localMap, currentkeypoints는 global2local을 해서 저장해둬야 함.
-
-            Chach_map_saver.push_back(std::make_tuple(currentKeyPoseIdxForLocalMap, currentPose, global2local(localMap, currentPose), global2local(currentkeypoints, currentPose)));
-
-            // 즉, 일정 범위의 맵을 포즈 값과 함께 전송한다.
-            LocalMapAndPoseMsg.pose = rosPose;
-            LocalMapAndPoseMsg.point_cloud1 = localMapMsg;
-            LocalMapAndPoseMsg.point_cloud2 = currentkeypointsMsg;
-            LocalMapAndPoseMsg.idx = currentKeyPoseIdxForLocalMap;
-            pubDenseFrameForLC.publish(LocalMapAndPoseMsg);
-            pubDisplayDenseFrame.publish(localMapMsg);
-
-
-            currentKeyPoseIdxForLocalMap += 1;
-            rangeOfKeyPoseIdxForLocalMap[0] = currentKeyPoseIdxForLocalMap;
-            rangeOfKeyPoseIdxForLocalMap[1] = currentKeyPoseIdxForLocalMap;
-            break;
-        }
-    }
+    local_map_idx_range[0]++;
 }
 
+/**
+ * @brief Process the local map.
+ * 
+ * This function runs continuously at a specified frequency to process the local map.
+ * It publishes the local map when the condition is met.
+ */
 void process_local_map(void){
     float localMapFrequency = 10.0; // 0.1 means run onces every 10s
     ros::Rate rate(localMapFrequency);
     while (ros::ok()) {
         rate.sleep();
-        if(recentIdxUpdated > 5){ // 최소 5개의 keypose가 들어오기 전에는 돌지 않음
+        while(local_map_idx_range[0] < recentIdxUpdated - 5){
             pubLocalMap();
-            
         }
     }
 }
@@ -1245,18 +1175,14 @@ void pub_for_saver(void) {
 }
 
 void process_save(void) {
-    float Frequency = 0.2; // 0.1 means run onces every 10s
+    float Frequency = 0.2; // 0.2 means run onces every 10s
     ros::Rate rate(Frequency);
     while (ros::ok()) {
         rate.sleep();
         if (recentIdxUpdated > 5){
-            cout << process_save_count << endl;
             process_save_count++;
             if(process_save_count == 2) {
-                for(int i; i < 20; i++){
-                    cout << " " << endl;
-                }
-                cout << "[Saver] Start" << endl;
+                cout << "[Saver] process_save_count is " << process_save_count << ", so Saver publish start." << endl;
                 mtxPosegraph.lock();
                 pub_for_saver();
                 mtxPosegraph.unlock();
@@ -1281,21 +1207,21 @@ int main(int argc, char **argv)
 
     // pgG2oSaveStream = std::fstream(save_directory + "singlesession_posegraph.g2o", std::fstream::out);
 
-    pgTimeSaveStream = std::fstream(save_directory + "times.txt", std::fstream::out); 
-    pgTimeSaveStream.precision(std::numeric_limits<double>::max_digits10);
+    // pgTimeSaveStream = std::fstream(save_directory + "times.txt", std::fstream::out); 
+    // pgTimeSaveStream.precision(std::numeric_limits<double>::max_digits10);
 
-    pgScansDirectory = save_directory + "Scans/";
-    auto unused = system((std::string("exec rm -r ") + pgScansDirectory).c_str());
-    unused = system((std::string("mkdir -p ") + pgScansDirectory).c_str());
+    // pgScansDirectory = save_directory + "Scans/";
+    // auto unused = system((std::string("exec rm -r ") + pgScansDirectory).c_str());
+    // unused = system((std::string("mkdir -p ") + pgScansDirectory).c_str());
 
-    pgSCDsDirectory = save_directory + "SCDs/"; // SCD: scan context descriptor 
-    unused = system((std::string("exec rm -r ") + pgSCDsDirectory).c_str());
-    unused = system((std::string("mkdir -p ") + pgSCDsDirectory).c_str());
+    // pgSCDsDirectory = save_directory + "SCDs/"; // SCD: scan context descriptor 
+    // unused = system((std::string("exec rm -r ") + pgSCDsDirectory).c_str());
+    // unused = system((std::string("mkdir -p ") + pgSCDsDirectory).c_str());
     
 
-    pgLocalScansDirectory = save_directory + "LocalSCDs/"; // SCD: scan context descriptor 
-    unused = system((std::string("exec rm -r ") + pgLocalScansDirectory).c_str());
-    unused = system((std::string("mkdir -p ") + pgLocalScansDirectory).c_str());
+    // pgLocalScansDirectory = save_directory + "LocalSCDs/"; // SCD: scan context descriptor 
+    // unused = system((std::string("exec rm -r ") + pgLocalScansDirectory).c_str());
+    // unused = system((std::string("mkdir -p ") + pgLocalScansDirectory).c_str());
 
     // system params 
 	nh.param<double>("keyframe_meter_gap", keyframeMeterGap, 2.0); // pose assignment every k m move 
