@@ -145,42 +145,42 @@ class Gt_dataset():
         self.icp_keypose.append(self.poses[0])
         prev_pose = self.icp_keypose[0]
 
-        for i, idx in tqdm(enumerate(self.key_idx[1:])):
-            if i < 100:
-                icp_source = o3d.geometry.PointCloud()
-                icp_target = o3d.geometry.PointCloud()
-                
-                icp_source.points = o3d.utility.Vector3dVector(transform_point_cloud(self.scans[idx][:,:3], self.poses[idx]))
-                # icp_source.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.2, max_nn=30))
-                icp_source.voxel_down_sample(voxel_size=0.1)
-                icp_target.points = o3d.utility.Vector3dVector(transform_point_cloud(self.scans[self.key_idx[i]][:,:3], prev_pose))
-                # icp_target.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.2, max_nn=30))
-                icp_target.voxel_down_sample(voxel_size=0.1)
-
-                voxel_size = 0.1
-                threshold = 8.0 * voxel_size
-                reg_p2p = o3d.pipelines.registration.registration_icp(icp_source, icp_target, threshold, np.eye(4,4), o3d.pipelines.registration.TransformationEstimationPointToPoint(), o3d.pipelines.registration.ICPConvergenceCriteria(max_iteration=400))
-                
-                # draw_registration_result(icp_source, icp_target, reg_p2p.transformation)
-                self.icp_keypose.append(np.matmul(reg_p2p.transformation, self.poses[idx]))
-                prev_pose = self.icp_keypose[-1]
+        for i, idx in tqdm(enumerate(self.key_idx[1:100])): # i =-> self.key_idx[i+1] == idx
+            icp_source = o3d.geometry.PointCloud()
+            icp_target = o3d.geometry.PointCloud()
             
-        for i, idx in tqdm(enumerate(self.icp_keypose)):
-            if idx < 100:
-                PCChach = o3d.geometry.PointCloud()
-                PCChach.points= o3d.utility.Vector3dVector(transform_point_cloud(self.scans[idx][:,:3], self.icp_keypose[i]))
-                pcMsg_pc += PCChach.voxel_down_sample(voxel_size=0.2)
-            if idx < 100:
-                odom_msg_chach = Pose()
-                odom_msg_chach.position.x = self.icp_keypose[idx][0,3]
-                odom_msg_chach.position.y = self.icp_keypose[idx][1,3]
-                odom_msg_chach.position.z = self.icp_keypose[idx][2,3]
-                qw, qx, qy, qz = rotation_matrix_to_quaternion(self.icp_keypose[i][:3, :3])
-                odom_msg_chach.orientation.w = qw
-                odom_msg_chach.orientation.x = qx
-                odom_msg_chach.orientation.y = qy
-                odom_msg_chach.orientation.z = qz
-                self.odom_msg.poses.append(odom_msg_chach)
+            icp_source.points = o3d.utility.Vector3dVector(self.scans[idx][:,:3])
+            icp_source.voxel_down_sample(voxel_size=0.1)
+            icp_target.points = o3d.utility.Vector3dVector(self.scans[self.key_idx[i]][:,:3])
+            icp_target.voxel_down_sample(voxel_size=0.1)
+            delta_pose = np.dot(np.linalg.inv(prev_pose), self.poses[idx])
+
+            voxel_size = 0.1
+            threshold = 8.0 * voxel_size
+            reg_p2p = o3d.pipelines.registration.registration_icp(icp_source, icp_target, threshold, delta_pose, o3d.pipelines.registration.TransformationEstimationPointToPoint(), o3d.pipelines.registration.ICPConvergenceCriteria(max_iteration=400))
+            T = np.eye(4,4)
+            T[:3, :3] = reg_p2p.transformation[:3,:3]
+
+            # draw_registration_result(icp_source, icp_target, reg_p2p.transformation)
+            self.icp_keypose.append(np.matmul(T, self.poses[idx]))
+            prev_pose = self.icp_keypose[-1]
+            
+        for i, idx in tqdm(enumerate(self.key_idx[:100])):
+            # PC
+            PCChach = o3d.geometry.PointCloud()
+            PCChach.points= o3d.utility.Vector3dVector(transform_point_cloud(self.scans[idx][:,:3], self.icp_keypose[i]))
+            pcMsg_pc += PCChach.voxel_down_sample(voxel_size=0.2)
+            # pose
+            odom_msg_chach = Pose()
+            odom_msg_chach.position.x = self.icp_keypose[i][0,3]
+            odom_msg_chach.position.y = self.icp_keypose[i][1,3]
+            odom_msg_chach.position.z = self.icp_keypose[i][2,3]
+            qw, qx, qy, qz = rotation_matrix_to_quaternion(self.icp_keypose[i][:3, :3])
+            odom_msg_chach.orientation.w = qw
+            odom_msg_chach.orientation.x = qx
+            odom_msg_chach.orientation.y = qy
+            odom_msg_chach.orientation.z = qz
+            self.odom_msg.poses.append(odom_msg_chach)
         # ------------------------------------------
         self.odom_msg.header.frame_id = "/camera_init"
         self.pcMsg = orh.o3dpc_to_rospc(pcMsg_pc.voxel_down_sample(voxel_size=0.3))
